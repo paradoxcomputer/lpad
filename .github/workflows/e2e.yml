@@ -1,0 +1,32 @@
+name: e2e (self-hosted)
+
+# Full unit + IDL-drift + standalone E2E, then nightly real proofs. Requires a
+# self-hosted runner labelled [self-hosted, lez] that has the LEZ source + the
+# risc0 toolchain. Register one for this repo to enable; the public `ci`
+# workflow (core math tests) gates PRs in the meantime.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * *'
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, lez]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup _lez symlink
+        run: bash setup.sh
+      - name: unit + IDL drift + standalone E2E (dev proofs)
+        run: bash scripts/ci-e2e.sh
+
+  nightly-real-proof:
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, lez]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup _lez symlink
+        run: bash setup.sh
+      - name: e2e with real proofs
+        run: RISC0_DEV_MODE= bash scripts/ci-e2e.sh

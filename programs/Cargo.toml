@@ -1,0 +1,59 @@
+[workspace]
+members = [
+    # vendored LEZ-ecosystem programs (verbatim from ldex → identical RISC0 image
+    # ids → free interop with the ldex DEX for bonding-curve auto-graduation)
+    "token/core",
+    "token",
+    "token/methods",
+    "ata/core",
+    "ata",
+    "ata/methods",
+    "wlez/core",
+    "wlez",
+    "wlez/methods",
+    # launchpad programs
+    "bonding_curve/core",
+    "bonding_curve",
+    "bonding_curve/methods",
+    "lbp/core",
+    "lbp",
+    "lbp/methods",
+    # tooling + tests
+    "integration_tests",
+    "tools/idl-gen",
+]
+exclude = [
+    "token/methods/guest",
+    "ata/methods/guest",
+    "wlez/methods/guest",
+    "bonding_curve/methods/guest",
+    "lbp/methods/guest",
+]
+resolver = "2"
+
+[workspace.dependencies]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["test-utils"] }
+token_core = { path = "token/core" }
+token_program = { path = "token" }
+ata_core = { path = "ata/core" }
+ata_program = { path = "ata" }
+wlez_core = { path = "wlez/core" }
+wlez_program = { path = "wlez" }
+bonding_curve_core = { path = "bonding_curve/core" }
+bonding_curve_program = { path = "bonding_curve" }
+lbp_core = { path = "lbp/core" }
+lbp_program = { path = "lbp" }
+serde = { version = "1.0", features = ["derive"] }
+borsh = { version = "1.0", features = ["derive"] }
+risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["client"] }
+serde_json = "1.0"
+tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }
+
+# Override the upstream nssa git dependency with the local checkout (the
+# composite-receipt STARK speedup). Path-relative to the `_lez` symlink that
+# setup.sh creates at the repo root. Both nssa and nssa_core must be patched
+# together to keep the dependency graph consistent.
+[patch."https://github.com/logos-blockchain/logos-execution-zone.git"]
+nssa = { path = "../_lez/nssa" }
+nssa_core = { path = "../_lez/nssa/core" }

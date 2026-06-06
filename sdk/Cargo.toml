@@ -1,0 +1,31 @@
+[package]
+name = "lpad-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "SDK for building Logos modules that interact with the LPAD launchpad (bonding curve + LBP), public and private (deshield->buy->re-shield) paths."
+
+[lib]
+name = "lpad_sdk"
+
+[dependencies]
+bonding_curve_core = { path = "../programs/bonding_curve/core" }
+lbp_core = { path = "../programs/lbp/core" }
+token_core = { path = "../programs/token/core" }
+ata_core = { path = "../programs/ata/core" }
+wlez_core = { path = "../programs/wlez/core" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
+sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["client"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+# Silence the wallet's sync_to_block stdout chatter so it never corrupts the
+# CLI's (possibly --json) stdout during a pre-op private-view sync.
+gag = "1"
+
+[patch."https://github.com/logos-blockchain/logos-execution-zone.git"]
+nssa_core = { path = "../_lez/nssa/core" }
+nssa = { path = "../_lez/nssa" }
+wallet = { path = "../_lez/wallet" }
+common = { path = "../_lez/common" }

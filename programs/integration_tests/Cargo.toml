@@ -1,0 +1,19 @@
+[package]
+name = "integration_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nssa = { workspace = true }
+nssa_core = { workspace = true, features = ["host"] }
+bonding_curve_core = { workspace = true }
+lbp_core = { workspace = true }
+token_core = { workspace = true }
+ata_core = { workspace = true }
+wlez_core = { workspace = true }
+token-methods = { path = "../token/methods" }
+ata-methods = { path = "../ata/methods" }
+bonding_curve-methods = { path = "../bonding_curve/methods" }
+lbp-methods = { path = "../lbp/methods" }
+wlez-methods = { path = "../wlez/methods" }
+borsh = { version = "1.5", features = ["derive"] }

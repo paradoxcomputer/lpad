@@ -1,0 +1,10 @@
+[package]
+name = "lbp_program"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
+lbp_core = { path = "core" }
+token_core = { path = "../token/core" }
+ata_core = { path = "../ata/core" }
