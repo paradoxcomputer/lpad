@@ -123,9 +123,13 @@ pub fn withdraw(
         );
     }
     if token_balance > 0 {
+        // The project-token leg is owned by the token vault's program, which may
+        // differ from the collateral vault's program if the two tokens live under
+        // distinct token programs.
+        let token_vault_program_id = token_vault.account.program_owner;
         calls.push(
             ChainedCall::new(
-                token_program_id,
+                token_vault_program_id,
                 vec![authorized(&token_vault), creator_token_holding.clone()],
                 &token_core::Instruction::Transfer { amount_to_transfer: token_balance },
             )

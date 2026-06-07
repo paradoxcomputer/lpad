@@ -5,7 +5,8 @@
 
 use lbp_core::{
     buy_tokens_out, compute_collateral_vault_pda_seed, compute_token_vault_pda_seed,
-    allowlist_leaf, fixed_price_tokens_out, is_open_allowlist, merkle_verify, PoolState, SaleStatus,
+    allowlist_leaf, fixed_price_tokens_out, is_open_allowlist, merkle_verify, read_fungible,
+    PoolState, SaleStatus, MAX_ALLOWLIST_PROOF_DEPTH,
 };
 use nssa_core::{
     account::{AccountWithMetadata, Data},
@@ -168,6 +169,11 @@ pub fn buy(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let state = PoolState::try_from(&pool.account.data).expect("invalid pool state account");
     check_accounts(&state, &pool, &token_vault, &collateral_vault, self_program_id);
+    let (collateral_def, _) = read_fungible(&buyer_collateral_holding, "Buy: buyer collateral holding");
+    assert_eq!(
+        collateral_def, state.collateral_definition_id,
+        "buyer collateral does not match the pool's collateral definition"
+    );
     // SECURITY: an allowlist-gated pool may ONLY be bought through `buy_gated`
     // (which proves Merkle inclusion). Without this, the submitter could pick the
     // ungated `Buy` instruction against the same pool and defeat the allowlist
@@ -209,6 +215,11 @@ pub fn buy_gated(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let state = PoolState::try_from(&pool.account.data).expect("invalid pool state account");
     check_accounts(&state, &pool, &token_vault, &collateral_vault, self_program_id);
+    let (collateral_def, _) = read_fungible(&buyer_collateral_holding, "BuyGated: buyer collateral holding");
+    assert_eq!(
+        collateral_def, state.collateral_definition_id,
+        "buyer collateral does not match the pool's collateral definition"
+    );
     assert!(
         !is_open_allowlist(&state.allowlist_root),
         "this sale has no allowlist; use Buy"
@@ -221,6 +232,12 @@ pub fn buy_gated(
         leaf,
         allowlist_leaf(&buyer_collateral_holding.account_id),
         "allowlist leaf must be the buyer's own leaf"
+    );
+    // Bound the caller-supplied proof before hashing it: each entry costs one
+    // SHA-256 in the guest, so an unbounded proof is a proving-cost DoS vector.
+    assert!(
+        proof.len() <= MAX_ALLOWLIST_PROOF_DEPTH,
+        "allowlist proof exceeds maximum depth"
     );
     assert!(
         merkle_verify(leaf, &proof, state.allowlist_root),

@@ -25,6 +25,67 @@ pub use lbp_core::{PoolState, SaleStatus as LbpStatus};
 
 pub type Result<T> = std::result::Result<T, String>;
 pub type TxHash = [u8; 32];
+/// Progress/phase sink: called with a short label before each long step.
+pub type ProgressFn = Box<dyn Fn(&str)>;
+
+/// Accounts/amount of one `AtomicDisposable` private saga (see
+/// [`Lpad::private_disposable_saga`]). `spend_src` is the shielded account that
+/// pays/sells; `reshield_target` the shielded account the realized output lands
+/// in.
+struct DisposableSaga {
+    spend_src: AccountId,
+    reshield_target: AccountId,
+    amount: u128,
+    /// Progress phase reported just before the public leg ("buying on the
+    /// curve" / "selling on the curve" / "buying on the pool"). Per-call because
+    /// bc-buy and lbp-buy share `text` but word this leg differently.
+    op_phase: &'static str,
+    text: SagaText,
+}
+
+/// The program-specific wording for one private saga, so the shared shape can
+/// emit the exact same progress phases and no-loss error text the three callers
+/// used before they were collapsed into [`Lpad::private_disposable_saga`].
+struct SagaText {
+    deshield_phase: &'static str,
+    reshield_phase: &'static str,
+    /// "public buy failed" / "public sell failed".
+    op_failed: &'static str,
+    /// "Buy" / "Sell" (the `{Op} error:` prefix).
+    op_capitalized: &'static str,
+    /// The deshielded asset noun: "collateral" / "tokens".
+    spend_noun: &'static str,
+    /// Verb agreement for `spend_noun`: "is" (collateral) / "are" (tokens).
+    is_are: &'static str,
+    /// Pronoun for `spend_noun`: "it" (collateral) / "them" (tokens).
+    it_them: &'static str,
+    /// "buy produced no tokens to re-shield" / "sell produced no collateral ...".
+    no_output: &'static str,
+}
+
+/// Wording for a private buy that deshields collateral (bc buy, lbp buy).
+const BUY_COLLATERAL_SAGA: SagaText = SagaText {
+    deshield_phase: "deshielding collateral (privacy proof, minutes)",
+    reshield_phase: "re-shielding tokens (privacy proof, minutes)",
+    op_failed: "public buy failed",
+    op_capitalized: "Buy",
+    spend_noun: "collateral",
+    is_are: "is",
+    it_them: "it",
+    no_output: "buy produced no tokens to re-shield",
+};
+
+/// Wording for a private sell that deshields project tokens (bc sell).
+const SELL_TOKENS_SAGA: SagaText = SagaText {
+    deshield_phase: "deshielding tokens (privacy proof, minutes)",
+    reshield_phase: "re-shielding collateral (privacy proof, minutes)",
+    op_failed: "public sell failed",
+    op_capitalized: "Sell",
+    spend_noun: "tokens",
+    is_are: "are",
+    it_them: "them",
+    no_output: "sell produced no collateral to re-shield",
+};
 
 /// A wallet-owned fungible token holding (public or shielded), with the token's
 /// on-chain name + wallet label resolved when available. Powers `my-balance`
@@ -117,14 +178,18 @@ fn q64_to_f64(x: u128) -> f64 {
 /// so the caller's slippage floor stays clean. Mirrors the CLI `bc quote` guard.
 #[must_use]
 pub fn bc_quote(state: &SaleState, collateral_in: u128) -> BcQuote {
-    let fee = bonding_curve_core::buy_fee(collateral_in, state.fee_bps);
-    let c_eff = collateral_in.saturating_sub(fee);
     let before = q64_to_f64(bonding_curve_core::spot_price_q64(state.virt_collateral, state.virt_token));
-    // Out-of-domain post-buy reserve / product: degenerate quote rather than panic.
-    let out_of_domain = state
-        .virt_collateral
-        .checked_add(c_eff)
-        .is_none_or(|v| v >= bonding_curve_core::MAX_VIRT_COLLATERAL)
+    // `buy_fee` computes `collateral_in * fee_bps` internally and panics on overflow,
+    // so bound that multiply here too: an out-of-domain fee multiply, post-buy reserve,
+    // or product yields a degenerate quote rather than a panic.
+    let fee_overflows = collateral_in.checked_mul(state.fee_bps).is_none();
+    let fee = if fee_overflows { 0 } else { bonding_curve_core::buy_fee(collateral_in, state.fee_bps) };
+    let c_eff = collateral_in.saturating_sub(fee);
+    let out_of_domain = fee_overflows
+        || state
+            .virt_collateral
+            .checked_add(c_eff)
+            .is_none_or(|v| v >= bonding_curve_core::MAX_VIRT_COLLATERAL)
         || state.virt_token.checked_mul(c_eff).is_none();
     if out_of_domain {
         return BcQuote {
@@ -278,7 +343,7 @@ pub struct LbpCreateArgs {
 pub struct LaunchpadClient {
     wallet: WalletCore,
     rt: tokio::runtime::Runtime,
-    progress: Option<Box<dyn Fn(&str)>>,
+    progress: Option<ProgressFn>,
 }
 
 impl LaunchpadClient {
@@ -297,7 +362,7 @@ impl LaunchpadClient {
     /// before each long step (proving, submit, inclusion), so a CLI/UI can show
     /// real loading states. Called on the caller's thread.
     pub fn set_progress(&mut self, f: impl Fn(&str) + 'static) {
-        self.progress = Some(Box::new(f));
+        self.progress = Some(Box::new(f) as ProgressFn);
     }
 
     fn report(&self, phase: &str) {
@@ -1291,61 +1356,28 @@ impl LaunchpadClient {
         collateral_in: u128,
         min_tokens_out: u128,
     ) -> Result<TxHash> {
-        // Privacy #3: re-shield target must be a shielded account we own.
-        if self.wallet.get_account_private(user_token_out).is_none() {
-            return Err("re-shield target must be a private (shielded) account in this wallet (RFP Privacy #3)".into());
-        }
-        // Fail fast before the multi-minute deshield proof if funds are short.
-        self.ensure_shielded_covers(user_collateral, collateral_in)?;
         // Guard the no-op-drain pin BEFORE the deshield burns the privacy proof,
         // so a poisoned sale fails fast and never makes the funds public.
         let s = self.bc_sale_checked(sale)?;
-        // Privacy #4: fresh single-use account A holdings (never reused).
-        let (a_collateral, _) = self.wallet.create_new_account_public(None);
-        let (a_token, _) = self.wallet.create_new_account_public(None);
-
-        // tx1 - DESHIELD collateral into the public A holding (privacy proof, no pool).
-        self.report("deshielding collateral (privacy proof, minutes)");
-        self.privacy_token_transfer(
-            PrivacyPreservingAccount::PrivateOwned(user_collateral),
-            PrivacyPreservingAccount::Public(a_collateral),
-            user_collateral,
-            collateral_in,
-        )?;
-
-        // tx2 - public buy (drift-free, min_out). a_collateral pays; the fresh
-        // a_token co-signs so its claim holds without a separate init tx.
-        self.report("buying on the curve");
-        let buy = self.submit_public(
-            program,
-            vec![sale, s.token_vault_id, s.collateral_vault_id, s.treasury_id, a_collateral, a_token, bonding_curve_core::CLOCK_01],
-            &[a_collateral, a_token],
-            bonding_curve_core::Instruction::Buy { collateral_in, min_tokens_out, deadline: self.tx_deadline()? },
-        );
-        if let Err(e) = buy {
-            // ROLLBACK: re-shield the deshielded collateral back to the user
-            // (retry+sync, like the success path) - only claim it reached the
-            // private holding if the re-shield actually returned Ok.
-            return Err(match self.reshield_with_retry(a_collateral, user_collateral, collateral_in) {
-                Ok(_) => format!("public buy failed (deshielded collateral rolled back to private): {e}"),
-                Err(re) => format!(
-                    "public buy failed AND rollback re-shield failed: {collateral_in} collateral is SAFE but \
-                     PUBLICLY held in the wallet-owned ephemeral account A (visible in `lpad my-balance`), \
-                     recoverable by re-shielding it into your private holding; no funds were lost. \
-                     Buy error: {e}. Rollback error: {re}"
-                ),
-            });
-        }
-
-        // Read the realized token output now sitting in the public a_token.
-        let bought = self.holding_balance(a_token)?;
-        if bought == 0 {
-            return Err("buy produced no tokens to re-shield".into());
-        }
-
-        // tx3 - RE-SHIELD the bought tokens to the user's private holding (privacy proof, no pool).
-        self.report("re-shielding tokens (privacy proof, minutes)");
-        self.reshield_with_retry(a_token, user_token_out, bought)
+        self.private_disposable_saga(
+            DisposableSaga {
+                spend_src: user_collateral,
+                reshield_target: user_token_out,
+                amount: collateral_in,
+                op_phase: "buying on the curve",
+                text: BUY_COLLATERAL_SAGA,
+            },
+            // tx2 - public buy (drift-free, min_out). a_collateral pays; the fresh
+            // a_token co-signs so its claim holds without a separate init tx.
+            |this, a_collateral, a_token| {
+                this.submit_public(
+                    program,
+                    vec![sale, s.token_vault_id, s.collateral_vault_id, s.treasury_id, a_collateral, a_token, bonding_curve_core::CLOCK_01],
+                    &[a_collateral, a_token],
+                    bonding_curve_core::Instruction::Buy { collateral_in, min_tokens_out, deadline: this.tx_deadline()? },
+                )
+            },
+        )
     }
 
     /// Private sell: the drift-free `deshield → public Sell → re-shield` saga -
@@ -1380,61 +1412,28 @@ impl LaunchpadClient {
         tokens_in: u128,
         min_collateral_out: u128,
     ) -> Result<TxHash> {
-        // Privacy #3: re-shield target must be a shielded account we own.
-        if self.wallet.get_account_private(user_collateral_out).is_none() {
-            return Err("re-shield target must be a private (shielded) account in this wallet (RFP Privacy #3)".into());
-        }
-        // Fail fast before the multi-minute deshield proof if tokens are short.
-        self.ensure_shielded_covers(user_token, tokens_in)?;
         // Guard the no-op-drain pin BEFORE the deshield burns the privacy proof,
         // so a poisoned sale fails fast and never makes the tokens public.
         let s = self.bc_sale_checked(sale)?;
-        // Privacy #4: fresh single-use account A holdings (never reused).
-        let (a_token, _) = self.wallet.create_new_account_public(None);
-        let (a_collateral, _) = self.wallet.create_new_account_public(None);
-
-        // tx1 - DESHIELD project tokens into the public A holding (privacy proof, no pool).
-        self.report("deshielding tokens (privacy proof, minutes)");
-        self.privacy_token_transfer(
-            PrivacyPreservingAccount::PrivateOwned(user_token),
-            PrivacyPreservingAccount::Public(a_token),
-            user_token,
-            tokens_in,
-        )?;
-
-        // tx2 - public sell (drift-free, min_out). a_token sells; the fresh
-        // a_collateral co-signs so its claim holds without a separate init tx.
-        self.report("selling on the curve");
-        let sell = self.submit_public(
-            program,
-            vec![sale, s.token_vault_id, s.collateral_vault_id, s.treasury_id, a_token, a_collateral, bonding_curve_core::CLOCK_01],
-            &[a_token, a_collateral],
-            bonding_curve_core::Instruction::Sell { tokens_in, min_collateral_out, deadline: self.tx_deadline()? },
-        );
-        if let Err(e) = sell {
-            // ROLLBACK: re-shield the deshielded tokens back to the user
-            // (retry+sync, like the success path) - only claim it reached the
-            // private holding if the re-shield actually returned Ok.
-            return Err(match self.reshield_with_retry(a_token, user_token, tokens_in) {
-                Ok(_) => format!("public sell failed (deshielded tokens rolled back to private): {e}"),
-                Err(re) => format!(
-                    "public sell failed AND rollback re-shield failed: {tokens_in} tokens are SAFE but \
-                     PUBLICLY held in the wallet-owned ephemeral account A (visible in `lpad my-balance`), \
-                     recoverable by re-shielding them into your private holding; no funds were lost. \
-                     Sell error: {e}. Rollback error: {re}"
-                ),
-            });
-        }
-
-        // Read the realized collateral now sitting in the public a_collateral.
-        let received = self.holding_balance(a_collateral)?;
-        if received == 0 {
-            return Err("sell produced no collateral to re-shield".into());
-        }
-
-        // tx3 - RE-SHIELD the collateral to the user's private holding (privacy proof, no pool).
-        self.report("re-shielding collateral (privacy proof, minutes)");
-        self.reshield_with_retry(a_collateral, user_collateral_out, received)
+        self.private_disposable_saga(
+            DisposableSaga {
+                spend_src: user_token,
+                reshield_target: user_collateral_out,
+                amount: tokens_in,
+                op_phase: "selling on the curve",
+                text: SELL_TOKENS_SAGA,
+            },
+            // tx2 - public sell (drift-free, min_out). a_token sells; the fresh
+            // a_collateral co-signs so its claim holds without a separate init tx.
+            |this, a_token, a_collateral| {
+                this.submit_public(
+                    program,
+                    vec![sale, s.token_vault_id, s.collateral_vault_id, s.treasury_id, a_token, a_collateral, bonding_curve_core::CLOCK_01],
+                    &[a_token, a_collateral],
+                    bonding_curve_core::Instruction::Sell { tokens_in, min_collateral_out, deadline: this.tx_deadline()? },
+                )
+            },
+        )
     }
 
     // ---- LBP: creator ----------------------------------------------------
@@ -1543,10 +1542,17 @@ impl LaunchpadClient {
         buyer_token: AccountId,
         collateral_in: u128,
         min_tokens_out: u128,
-        leaf: [u8; 32],
         proof: Vec<[u8; 32]>,
     ) -> Result<TxHash> {
         let p = self.lbp_pool_checked(pool)?;
+        // Mirror the on-chain bound: reject an over-long proof locally rather than
+        // burn proving cost on a tx the guest will reject anyway.
+        if proof.len() > lbp_core::MAX_ALLOWLIST_PROOF_DEPTH {
+            return Err("allowlist proof exceeds maximum depth".into());
+        }
+        // Derive the leaf from buyer_collateral - the exact account BuyGated binds
+        // against on-chain - so it can never be mis-bound to the wrong account.
+        let leaf = lbp_core::allowlist_leaf(&buyer_collateral);
         self.submit_public(
             program,
             vec![pool, p.token_vault_id, p.collateral_vault_id, buyer_collateral, buyer_token, lbp_core::CLOCK_01],
@@ -1585,61 +1591,93 @@ impl LaunchpadClient {
         collateral_in: u128,
         min_tokens_out: u128,
     ) -> Result<TxHash> {
-        if self.wallet.get_account_private(user_token_out).is_none() {
-            return Err("re-shield target must be a private (shielded) account in this wallet (RFP Privacy #3)".into());
-        }
-        // Fail fast before the multi-minute deshield proof if funds are short.
-        self.ensure_shielded_covers(user_collateral, collateral_in)?;
         // Guard the no-op-drain pin BEFORE the deshield burns the privacy proof,
         // so a poisoned pool fails fast and never makes the funds public.
         let p = self.lbp_pool_checked(pool)?;
-        let (a_collateral, _) = self.wallet.create_new_account_public(None);
-        let (a_token, _) = self.wallet.create_new_account_public(None);
+        self.private_disposable_saga(
+            DisposableSaga {
+                spend_src: user_collateral,
+                reshield_target: user_token_out,
+                amount: collateral_in,
+                op_phase: "buying on the pool",
+                text: BUY_COLLATERAL_SAGA,
+            },
+            // tx2 - PUBLIC buy a_collateral → a_token (drift-free, live clock).
+            // a_collateral pays AND the fresh a_token co-signs (self-claims).
+            |this, a_collateral, a_token| {
+                this.submit_public(
+                    program,
+                    vec![pool, p.token_vault_id, p.collateral_vault_id, a_collateral, a_token, lbp_core::CLOCK_01],
+                    &[a_collateral, a_token],
+                    lbp_core::Instruction::Buy { collateral_in, min_tokens_out, deadline: this.tx_deadline()? },
+                )
+            },
+        )
+    }
 
-        // tx1 - DESHIELD collateral → public A (privacy proof, no pool).
-        self.report("deshielding collateral (privacy proof, minutes)");
+    // ---- private helpers --------------------------------------------------
+
+    /// Shared shape of the three `AtomicDisposable` private sagas (bc buy/sell,
+    /// lbp buy): deshield `spend_src` → run the program-specific public leg →
+    /// re-shield the realized output to `reshield_target`, with the identical
+    /// no-loss rollback. `build_public` supplies only the program-specific public
+    /// submit, receiving `(a_in, a_out)`: `a_in` is the public account the
+    /// deshield funds (it pays/sells), `a_out` the fresh account the public leg
+    /// pays into (re-shielded on success). Callers guard the no-op-drain pin
+    /// (`*_checked`) before calling, so a poisoned sale/pool never deshields.
+    fn private_disposable_saga(
+        &mut self,
+        saga: DisposableSaga,
+        build_public: impl FnOnce(&Self, AccountId, AccountId) -> Result<TxHash>,
+    ) -> Result<TxHash> {
+        let DisposableSaga { spend_src, reshield_target, amount, op_phase, text } = saga;
+        // Privacy #3: re-shield target must be a shielded account we own.
+        if self.wallet.get_account_private(reshield_target).is_none() {
+            return Err("re-shield target must be a private (shielded) account in this wallet (RFP Privacy #3)".into());
+        }
+        // Fail fast before the multi-minute deshield proof if funds are short.
+        self.ensure_shielded_covers(spend_src, amount)?;
+        // Privacy #4: fresh single-use account A holdings (never reused).
+        let (a_in, _) = self.wallet.create_new_account_public(None);
+        let (a_out, _) = self.wallet.create_new_account_public(None);
+
+        // tx1 - DESHIELD the spend asset into the public A holding (privacy proof, no pool).
+        self.report(text.deshield_phase);
         self.privacy_token_transfer(
-            PrivacyPreservingAccount::PrivateOwned(user_collateral),
-            PrivacyPreservingAccount::Public(a_collateral),
-            user_collateral,
-            collateral_in,
+            PrivacyPreservingAccount::PrivateOwned(spend_src),
+            PrivacyPreservingAccount::Public(a_in),
+            spend_src,
+            amount,
         )?;
 
-        // tx2 - PUBLIC buy a_collateral → a_token (drift-free, live clock).
-        // a_collateral pays AND the fresh a_token co-signs (self-claims).
-        self.report("buying on the pool");
-        let buy = self.submit_public(
-            program,
-            vec![pool, p.token_vault_id, p.collateral_vault_id, a_collateral, a_token, lbp_core::CLOCK_01],
-            &[a_collateral, a_token],
-            lbp_core::Instruction::Buy { collateral_in, min_tokens_out, deadline: self.tx_deadline()? },
-        );
-        if let Err(e) = buy {
-            // ROLLBACK: re-shield the deshielded collateral back to the user
+        // tx2 - the program-specific public leg (drift-free, min_out).
+        self.report(op_phase);
+        if let Err(e) = build_public(self, a_in, a_out) {
+            // ROLLBACK: re-shield the deshielded asset back to the user
             // (retry+sync, like the success path) - only claim it reached the
             // private holding if the re-shield actually returned Ok.
-            return Err(match self.reshield_with_retry(a_collateral, user_collateral, collateral_in) {
-                Ok(_) => format!("public buy failed (deshielded collateral rolled back to private): {e}"),
+            return Err(match self.reshield_with_retry(a_in, spend_src, amount) {
+                Ok(_) => format!("{} (deshielded {} rolled back to private): {e}", text.op_failed, text.spend_noun),
                 Err(re) => format!(
-                    "public buy failed AND rollback re-shield failed: {collateral_in} collateral is SAFE but \
+                    "{} AND rollback re-shield failed: {amount} {} {} SAFE but \
                      PUBLICLY held in the wallet-owned ephemeral account A (visible in `lpad my-balance`), \
-                     recoverable by re-shielding it into your private holding; no funds were lost. \
-                     Buy error: {e}. Rollback error: {re}"
+                     recoverable by re-shielding {} into your private holding; no funds were lost. \
+                     {} error: {e}. Rollback error: {re}",
+                    text.op_failed, text.spend_noun, text.is_are, text.it_them, text.op_capitalized,
                 ),
             });
         }
 
-        let bought = self.holding_balance(a_token)?;
-        if bought == 0 {
-            return Err("buy produced no tokens to re-shield".into());
+        // Read the realized output now sitting in the public a_out.
+        let received = self.holding_balance(a_out)?;
+        if received == 0 {
+            return Err(text.no_output.into());
         }
 
-        // tx3 - RE-SHIELD bought tokens → user's private holding (privacy proof, no pool).
-        self.report("re-shielding tokens (privacy proof, minutes)");
-        self.reshield_with_retry(a_token, user_token_out, bought)
+        // tx3 - RE-SHIELD the realized output to the user's private holding (privacy proof, no pool).
+        self.report(text.reshield_phase);
+        self.reshield_with_retry(a_out, reshield_target, received)
     }
-
-    // ---- private helpers --------------------------------------------------
 
     fn holding_definition(&self, holding: AccountId) -> Result<AccountId> {
         let acc = self.read_account(holding)?;
@@ -1676,19 +1714,19 @@ impl LaunchpadClient {
                 .poll_native_token_transfer(hash)
                 .await
                 .map_err(|e| format!("tx not included: {e}"))?;
-            if let NSSATransaction::PrivacyPreserving(ppt) = tx {
-                if let Some(secret) = secrets.into_iter().next() {
-                    wallet
-                        .decode_insert_privacy_preserving_transaction_results(
-                            &ppt,
-                            &[AccDecodeData::Decode(secret, decode_into)],
-                        )
-                        .map_err(|e| format!("decode results: {e:?}"))?;
-                    wallet
-                        .store_persistent_data()
-                        .await
-                        .map_err(|e| format!("persist wallet: {e}"))?;
-                }
+            if let NSSATransaction::PrivacyPreserving(ppt) = tx
+                && let Some(secret) = secrets.into_iter().next()
+            {
+                wallet
+                    .decode_insert_privacy_preserving_transaction_results(
+                        &ppt,
+                        &[AccDecodeData::Decode(secret, decode_into)],
+                    )
+                    .map_err(|e| format!("decode results: {e:?}"))?;
+                wallet
+                    .store_persistent_data()
+                    .await
+                    .map_err(|e| format!("persist wallet: {e}"))?;
             }
             Ok(to_hash(hash))
         })

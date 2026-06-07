@@ -744,6 +744,19 @@ pub fn lbp_buy(paths: &WalletPaths, program: ProgramId, pool: AccountId, buyer_c
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn lbp_buy_gated(paths: &WalletPaths, program: ProgramId, pool: AccountId, buyer_collateral: Option<String>, buyer_token: Option<String>, collateral_in: u128, min_out: Option<u128>, slippage_bps: u128, proof: Vec<[u8; 32]>, json: bool) -> Result<(), String> {
+    let tx = run(paths, json, "buying (gated)", |c| {
+        let p = c.lbp_pool(pool)?;
+        let bc = holding(c, buyer_collateral, p.collateral_definition_id, false, &[p.treasury_id], "collateral")?;
+        let bt = recv_holding(c, buyer_token, p.token_definition_id)?;
+        let min = min_out_floor(min_out, lpad_sdk::lbp_quote(&p, c.now_ms().max(0) as u64, collateral_in).tokens_out, slippage_bps);
+        c.lbp_buy_gated(program, pool, bc, bt, collateral_in, min, proof)
+    })?;
+    submitted(json, "lbp buy-gated", tx);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn lbp_buy_ata(paths: &WalletPaths, program: ProgramId, ata_program: ProgramId, pool: AccountId, owner: Option<String>, fund_from: Option<String>, collateral_in: u128, min_out: Option<u128>, slippage_bps: u128, json: bool) -> Result<(), String> {
     let tx = run(paths, json, "buying (ATA)", |c| {
         let p = c.lbp_pool(pool)?;

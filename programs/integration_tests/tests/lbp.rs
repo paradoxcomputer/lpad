@@ -210,6 +210,39 @@ fn public_buy_moves_tokens_and_collateral() {
     assert_eq!(pool.buy_count, 1);
 }
 
+/// A keypair `Buy` paying with a token other than the pool's collateral
+/// definition is rejected at the program boundary with a clear message, rather
+/// than failing later inside the token-program transfer.
+#[test]
+#[should_panic(expected = "buyer collateral does not match the pool's collateral definition")]
+fn public_buy_rejects_wrong_collateral_token() {
+    let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
+    let i = ids(creator);
+    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    deploy(&mut state);
+    seed_open_pool(&mut state, &i);
+
+    let buyer_key = PrivateKey::try_new([60; 32]).unwrap();
+    let buyer_coll = id_of(&buyer_key);
+    let buyer_tok = AccountId::new([61; 32]);
+    let wrong_def = AccountId::new([99; 32]);
+    state.force_insert_account(buyer_coll, fungible(wrong_def, 100_000));
+    state.force_insert_account(buyer_tok, fungible(i.token_def, 0));
+
+    let instruction = Instruction::Buy { collateral_in: 5_000, min_tokens_out: 0, deadline: u64::MAX };
+    let message = public_transaction::Message::try_new(
+        lbp(),
+        vec![i.pool, i.token_vault, i.collateral_vault, buyer_coll, buyer_tok, CLOCK_01],
+        vec![Nonce(0)],
+        instruction,
+    )
+    .unwrap();
+    let witness = public_transaction::WitnessSet::for_message(&message, &[&buyer_key]);
+    state
+        .transition_from_public_transaction(&PublicTransaction::new(message, witness), 0, 0)
+        .expect("public LBP buy must succeed");
+}
+
 /// LBP buy with the buyer side using ATAs (RFP-016 Func #9). The collateral leg
 /// is routed through the ATA program; tokens land in the buyer's token ATA. The
 /// collateral vault is pre-seeded (as `CreateSale` does) so the `ata::Transfer`

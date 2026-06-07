@@ -66,13 +66,15 @@ pub fn buy_ata(
         "buyer collateral ATA token does not match the pool's collateral definition"
     );
 
-    let token_program_id = collateral_vault.account.program_owner;
     let t_ms = u64::try_from(clock_ts.max(0)).expect("clock must be non-negative");
     let outcome = apply_buy(state, collateral_in, min_tokens_out, t_ms, clock_block_id, true);
     let pool_id = pool.account_id;
 
     let mut owner_auth = owner.clone();
     owner_auth.is_authorized = true;
+    // The token leg is owned by the token vault's program, which may differ from
+    // the collateral vault's program if the two tokens live under distinct programs.
+    let token_vault_program_id = token_vault.account.program_owner;
     let calls = vec![
         // 1. buyer collateral ATA -> collateral vault (via the ATA program).
         ChainedCall::new(
@@ -82,7 +84,7 @@ pub fn buy_ata(
         ),
         // 2. token vault (PDA) -> buyer token ATA.
         ChainedCall::new(
-            token_program_id,
+            token_vault_program_id,
             vec![authorized(&token_vault), buyer_token_ata.clone()],
             &token_core::Instruction::Transfer { amount_to_transfer: outcome.tokens_out },
         )

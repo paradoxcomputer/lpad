@@ -9,7 +9,7 @@
 use clap::{Parser, Subcommand};
 use nssa_core::account::AccountId;
 
-use lpad_cli::fmt::{hex_account, parse_account, parse_program, parse_root, parse_weight_q64, q64_to_f64};
+use lpad_cli::fmt::{hex_account, parse_account, parse_program, parse_proof, parse_root, parse_weight_q64, q64_to_f64};
 use lpad_cli::online::{self, WalletPaths};
 use lpad_cli::ui;
 
@@ -40,7 +40,7 @@ enum Cmd {
     },
     /// Print a program's deployed id (RISC0 image id) from its guest ELF.
     ProgramId {
-        /// Which program: `bc` or `lbp`.
+        /// Which program: `bc`, `lbp`, `ata`, or `wlez`.
         which: String,
     },
     /// [online] Your token balances across every wallet account (public + shielded).
@@ -151,6 +151,8 @@ enum LbpCmd {
     PoolInfo { #[arg(long)] pool: String, #[arg(long, default_value_t = 0)] at: u64 },
     /// [online] Buy from a pool (public path).
     Buy { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long = "buyer-collateral")] buyer_collateral: Option<String>, #[arg(long = "buyer-token")] buyer_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
+    /// [online] Buy from an allowlist-gated pool. The leaf is derived from the buyer's collateral holding; `--proof` is a comma-separated list of 32-byte hex sibling hashes (empty for a single-member tree).
+    BuyGated { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long = "buyer-collateral")] buyer_collateral: Option<String>, #[arg(long = "buyer-token")] buyer_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128, #[arg(long = "proof", default_value = "")] proof: String },
     /// [online] Buy via Associated Token Accounts (RFP Func: ATAs). `--fund-from` seeds the collateral ATA first.
     BuyAta { #[arg(long)] program: Option<String>, #[arg(long = "ata-program")] ata_program: Option<String>, #[arg(long)] pool: String, #[arg(long)] owner: Option<String>, #[arg(long = "fund-from")] fund_from: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Private buy: deshield → buy → re-shield via a fresh ephemeral account A (public buy leg priced at the live clock).
@@ -453,6 +455,9 @@ fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<St
         LbpCmd::PoolInfo { pool, at } => return online::lbp_pool_info(&paths()?, parse_account(&pool)?, at, json),
         LbpCmd::Buy { program, pool, buyer_collateral, buyer_token, collateral_in, min_out, slippage_bps } => {
             return online::lbp_buy(&paths()?, prog_id(program)?, parse_account(&pool)?, buyer_collateral, buyer_token, collateral_in, min_out, slippage_bps, json);
+        }
+        LbpCmd::BuyGated { program, pool, buyer_collateral, buyer_token, collateral_in, min_out, slippage_bps, proof } => {
+            return online::lbp_buy_gated(&paths()?, prog_id(program)?, parse_account(&pool)?, buyer_collateral, buyer_token, collateral_in, min_out, slippage_bps, parse_proof(&proof)?, json);
         }
         LbpCmd::BuyAta { program, ata_program, pool, owner, fund_from, collateral_in, min_out, slippage_bps } => {
             return online::lbp_buy_ata(&paths()?, prog_id(program)?, ata_prog_id(ata_program)?, parse_account(&pool)?, owner, fund_from, collateral_in, min_out, slippage_bps, json);

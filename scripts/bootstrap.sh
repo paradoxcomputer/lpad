@@ -135,15 +135,19 @@ ATA_ID=$(lpad program-id ata --json | python3 -c 'import json,sys;print(json.loa
 echo "   ata program id = $ATA_ID"
 echo "   lbp program id = $LBP_ID"
 
-# Weights shift 0.9 -> 0.1 over a long window so the sale is active throughout
-# the test run; collateral_seed anchors the opening price.
-LBP_DEPOSIT=500000; LBP_SEED=10000; LBP_TEND=99999999999999
+# Weights shift 0.9 -> 0.1 over a 1-year window STARTING NOW so the sale is
+# active throughout the test run; collateral_seed anchors the opening price.
+# t_start must be ~now (not epoch 0): create_sale caps (t_end - t_start) at
+# ~10 years, and `now` itself is already >10y past epoch 0, so a 0 start has no
+# valid end.
+LBP_DEPOSIT=500000; LBP_SEED=10000
+LBP_TSTART=$(date +%s%3N); LBP_TEND=$(( LBP_TSTART + 31536000000 ))  # now .. now+1yr
 echo ">> creating LBP sale (deposit=$LBP_DEPOSIT seed=$LBP_SEED w 0.9->0.1)"
 lpad lbp create-sale --program "$LBP_ID" \
   --collateral-def "$COLL_DEF" --treasury "$TREASURY" \
   --creator-token-holding "$PROJ_HOLD" --creator-collateral-holding "$COLL_HOLD" \
   --creator "$CREATOR" --token-deposit "$LBP_DEPOSIT" --collateral-seed "$LBP_SEED" \
-  --w-start 0.9 --w-end 0.1 --t-start 0 --t-end "$LBP_TEND" \
+  --w-start 0.9 --w-end 0.1 --t-start "$LBP_TSTART" --t-end "$LBP_TEND" \
   --fee-bps "$FEE_BPS" --nonce "$NONCE" >&2
 sleep 16
 LBP_POOL_ID=$(lpad lbp ids --program "$LBP_ID" --token-def "$PROJ_DEF" \

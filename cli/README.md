@@ -554,6 +554,17 @@ with `--pool`.
 lpad lbp buy-private --pool <POOL_ID> --in 1000
 ```
 
+### `lpad lbp buy-gated` · `[online]`
+Buy from an **allowlist-gated** pool (one created with `--allowlist-root`). Same
+flags as `lbp buy`, plus `--proof`: a comma-separated list of 32-byte hex Merkle
+sibling hashes proving the buyer is on the allowlist (omit for a single-member
+tree). The allowlist leaf is derived from the buyer's collateral holding
+automatically, so you never pass it; the ungated `lbp buy` is rejected on a gated
+pool.
+```bash
+lpad lbp buy-gated --pool <POOL_ID> --in 1000 --proof <HASH>,<HASH>
+```
+
 ### `lpad lbp pause` · `[online]`
 Pause a pool (creator). Note: this does **not** halt weight progression.
 ```bash

@@ -194,6 +194,11 @@ impl SaleState {
 
 /// Bonding-curve program instructions. See `SPEC.md` §1.4 for account orders.
 #[derive(Serialize, Deserialize)]
+// CreateSale is much larger than the hot Buy/Sell/lifecycle variants, but it is
+// constructed once per sale (cold) and the enum is serde-only (no fixed wire
+// layout), so boxing it is not worth it - and the #[lez_program] guest dispatcher
+// destructures CreateSale by named fields, which a Box<...> tuple variant breaks.
+#[allow(clippy::large_enum_variant)]
 pub enum Instruction {
     /// Create a new sale. Transfers `D + R` project tokens from the creator into
     /// the token vault. No real collateral is deposited.

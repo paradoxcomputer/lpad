@@ -37,6 +37,15 @@ pub const ORACLE_RING_CAP: usize = 64;
 /// Mirrors `bonding_curve_core::MAX_METADATA_LEN`.
 pub const MAX_METADATA_LEN: usize = 64;
 
+/// Maximum length of a `BuyGated` Merkle inclusion proof (tree depth). A depth
+/// of 32 supports a 2^32-member allowlist - far beyond any realistic sale -
+/// while bounding the caller-supplied `proof: Vec<[u8; 32]>` so an attacker
+/// cannot inflate guest cycle count / proving cost with junk siblings: each
+/// extra entry forces one more SHA-256 in [`merkle_verify`]. Enforced before
+/// verification on the on-chain path (`buy::buy_gated`) and mirrored
+/// client-side in the SDK.
+pub const MAX_ALLOWLIST_PROOF_DEPTH: usize = 32;
+
 /// Maximum sale-schedule span (`t_end_ms - t_start_ms`), ~10 years in ms. The
 /// linear weight interpolation in [`weight_token_q64`] forms `delta * elapsed`
 /// with `delta` up to ~2^64 (Q64.64 weight gap) and `elapsed` up to the span;
@@ -171,6 +180,11 @@ impl PoolState {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
+// CreateSale is much larger than the hot Buy/lifecycle variants, but it is
+// constructed once per sale (cold) and the enum is serde-only (no fixed wire
+// layout), so boxing it is not worth it - and the #[lez_program] guest dispatcher
+// destructures CreateSale by named fields, which a Box<...> tuple variant breaks.
+#[allow(clippy::large_enum_variant)]
 pub enum Instruction {
     CreateSale {
         collateral_definition_id: AccountId,

@@ -109,10 +109,12 @@ pub fn buy_ata(
         );
     }
 
-    // 3. token vault (PDA) -> buyer token ATA (tokens_out).
+    // 3. token vault (PDA) -> buyer token ATA (tokens_out). The token leg is owned
+    //    by the token vault's program, which may differ from the collateral one.
+    let token_vault_program_id = token_vault.account.program_owner;
     calls.push(
         ChainedCall::new(
-            token_program_id,
+            token_vault_program_id,
             vec![authorized(&token_vault), buyer_token_ata.clone()],
             &token_core::Instruction::Transfer { amount_to_transfer: outcome.tokens_out },
         )

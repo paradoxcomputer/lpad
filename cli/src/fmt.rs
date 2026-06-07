@@ -55,6 +55,16 @@ pub fn parse_root(s: &str) -> Result<[u8; 32], String> {
     parse_bytes32(s)
 }
 
+/// Parse a Merkle inclusion proof: a comma-separated list of 32-byte hex sibling
+/// hashes. The empty string → no siblings (a single-member allowlist tree, where
+/// the member's leaf is itself the root).
+pub fn parse_proof(s: &str) -> Result<Vec<[u8; 32]>, String> {
+    if s.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    s.split(',').map(|h| parse_bytes32(h.trim())).collect()
+}
+
 /// Parse a weight into Q64.64. Accepts `"0.99"` (decimal fraction) or `"99/100"`.
 pub fn parse_weight_q64(s: &str) -> Result<u128, String> {
     let one: u128 = 1u128 << 64;

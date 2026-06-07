@@ -21,23 +21,17 @@ pub fn create_associated_token_account(
         ata_program_id,
     );
 
-    // Idempotent: already initialized → no-op
-    if ata_account.account != Account::default() {
-        return (
-            vec![
-                AccountPostState::new_claimed_if_default(owner.account.clone(), Claim::Authorized),
-                AccountPostState::new(token_definition.account.clone()),
-                AccountPostState::new(ata_account.account.clone()),
-            ],
-            vec![],
-        );
-    }
-
     let post_states = vec![
         AccountPostState::new_claimed_if_default(owner.account.clone(), Claim::Authorized),
         AccountPostState::new(token_definition.account.clone()),
         AccountPostState::new(ata_account.account.clone()),
     ];
+
+    // Idempotent: already initialized → no-op
+    if ata_account.account != Account::default() {
+        return (post_states, vec![]);
+    }
+
     let mut ata_account_auth = ata_account.clone();
     ata_account_auth.is_authorized = true;
     let chained_call = ChainedCall::new(
