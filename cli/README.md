@@ -315,6 +315,15 @@ Derive the pool + vault PDA addresses (same flags as `bc ids`).
 lpad lbp ids --token-def <TOKEN_DEF> --collateral-def <WLEZ_DEF> --creator <CREATOR>
 ```
 
+### `lpad lbp allowlist-leaf` · `[offline]`
+Compute the allowlist Merkle leaf for an account's collateral holding. For a
+single-member allowlist this hex is the `--allowlist-root` to pass to `lbp
+create-sale`; larger allowlists hash sorted leaf pairs to build the root. `lbp
+buy-gated` derives the same leaf from the buyer automatically.
+```bash
+lpad lbp allowlist-leaf --account <BUYER_COLLATERAL_HOLDING>
+```
+
 ---
 
 ## Bonding curve (RFP-015)

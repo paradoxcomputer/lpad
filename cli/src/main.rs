@@ -147,6 +147,10 @@ enum LbpCmd {
     Quote { #[arg(long = "reserve-token")] reserve_token: u128, #[arg(long = "reserve-collateral")] reserve_collateral: u128, #[arg(long = "w-start")] w_start: String, #[arg(long = "w-end")] w_end: String, #[arg(long = "t-start")] t_start: u64, #[arg(long = "t-end")] t_end: u64, #[arg(long)] at: u64, #[arg(long = "in")] collateral_in: u128 },
     /// Derive the pool + vault PDA addresses for a sale.
     Ids { #[arg(long)] program: Option<String>, #[arg(long = "token-def")] token_def: String, #[arg(long = "collateral-def")] collateral_def: String, #[arg(long)] creator: String, #[arg(long, default_value_t = 0)] nonce: u64 },
+    /// [offline] Allowlist Merkle leaf for an account's collateral holding. For a
+    /// single-member allowlist this hex is the `--allowlist-root` to pass to `lbp
+    /// create-sale`; `lbp buy-gated` derives the same leaf from the buyer.
+    AllowlistLeaf { #[arg(long)] account: String },
     /// [online] Read a pool's on-chain state at time `--at` (ms).
     PoolInfo { #[arg(long)] pool: String, #[arg(long, default_value_t = 0)] at: u64 },
     /// [online] Buy from a pool (public path).
@@ -451,6 +455,14 @@ fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<St
             let (td, cd, cr) = (parse_account(&token_def)?, parse_account(&collateral_def)?, parse_account(&creator)?);
             let pool = lbp::compute_pool_pda(prog, td, cd, cr, nonce);
             print_ids(json, "pool", pool, lbp::compute_token_vault_pda(prog, pool), lbp::compute_collateral_vault_pda(prog, pool));
+        }
+        LbpCmd::AllowlistLeaf { account } => {
+            let acc = parse_account(&account)?;
+            let hex: String = lbp::allowlist_leaf(&acc).iter().map(|b| format!("{b:02x}")).collect();
+            out(json, serde_json::json!({ "leaf": &hex }), || {
+                ui::header("LBP allowlist leaf");
+                ui::kv("leaf (single-member root)", &hex);
+            });
         }
         LbpCmd::PoolInfo { pool, at } => return online::lbp_pool_info(&paths()?, parse_account(&pool)?, at, json),
         LbpCmd::Buy { program, pool, buyer_collateral, buyer_token, collateral_in, min_out, slippage_bps } => {

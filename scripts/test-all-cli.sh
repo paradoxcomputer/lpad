@@ -29,15 +29,22 @@ chk "bc ids"         "$L" bc ids --program "$LPAD_BC_PROGRAM_ID" --token-def "$L
 chk "lbp weight"     "$L" lbp weight --w-start 0.9 --w-end 0.1 --t-start 0 --t-end 1000 --at 500
 chk "lbp quote"      "$L" lbp quote --reserve-token 500000 --reserve-collateral 10000 --w-start 0.9 --w-end 0.1 --t-start 0 --t-end 1000 --at 500 --in 1000
 chk "lbp ids"        "$L" lbp ids --program "$LPAD_LBP_PROGRAM_ID" --token-def "$LPAD_PROJ_DEF" --collateral-def "$LPAD_COLL_DEF" --creator "$LPAD_CREATOR"
-chk "program-id bc"  "$L" program-id bc
-chk "program-id lbp" "$L" program-id lbp
-chk "program-id ata" "$L" program-id ata
+chk "program-id bc"   "$L" program-id bc
+chk "program-id lbp"  "$L" program-id lbp
+chk "program-id ata"  "$L" program-id ata
+chk "program-id wlez" "$L" program-id wlez
+chk "lbp allowlist-leaf" "$L" lbp allowlist-leaf --account "$LPAD_BUYER_COLL"
 
 echo "## ONLINE - reads"
 chk "status"         "$L" status
 chk "balance"        "$L" balance --account "$LPAD_BUYER_COLL"
 chk "bc sale-info"   "$L" bc sale-info --sale "$LPAD_SALE_ID"
 chk "lbp pool-info"  "$L" lbp pool-info --pool "$LPAD_LBP_POOL_ID" --at "$(date +%s%3N)"
+
+echo "## ONLINE - discovery"
+chk "my-balance" "$L" my-balance
+chk "my-sales"   "$L" my-sales
+chk "my-pools"   "$L" my-pools
 
 echo "## ONLINE - bonding-curve writes"
 chk "bc buy"                  "$L" bc buy --program "$LPAD_BC_PROGRAM_ID" --sale "$LPAD_SALE_ID" --buyer-collateral "$LPAD_BUYER_COLL" --buyer-token "$LPAD_BUYER_TOK" --in 1000 --min-out 0
@@ -50,6 +57,19 @@ chk "lbp buy-private" "$L" lbp buy-private --program "$LPAD_LBP_PROGRAM_ID" --po
 chk "lbp poke"   "$L" lbp poke   --program "$LPAD_LBP_PROGRAM_ID" --pool "$LPAD_LBP_POOL_ID"
 chk "lbp pause"  "$L" lbp pause  --program "$LPAD_LBP_PROGRAM_ID" --pool "$LPAD_LBP_POOL_ID" --creator "$LPAD_CREATOR"
 chk "lbp resume" "$L" lbp resume --program "$LPAD_LBP_PROGRAM_ID" --pool "$LPAD_LBP_POOL_ID" --creator "$LPAD_CREATOR"
+
+echo "## ONLINE - native LEZ (wrap / unwrap; idempotently initializes wlez)"
+chk "wrap"   "$L" wrap   --amount 2000
+chk "unwrap" "$L" unwrap --amount 500
+
+echo "## ONLINE - privacy (shield / deshield, public<->shielded + native-LEZ)"
+chk "shield"       "$L" shield       --token-def "$LPAD_COLL_DEF" --amount 50
+chk "deshield"     "$L" deshield     --token-def "$LPAD_COLL_DEF" --amount 50
+chk "shield-lez"   "$L" shield-lez   --amount 500
+chk "deshield-lez" "$L" deshield-lez --amount 500
+
+echo "## ONLINE - native-LEZ sale (create-token-sale: mints token+metadata, WLEZ collateral)"
+chk "bc create-token-sale" "$L" bc create-token-sale --name "NativeTok" --symbol "NTK" --supply 1000000 --sale-quantity 100000 --vt 2000000 --vc 50000 --nonce "$(date +%s)"
 
 echo "## ONLINE - ATAs (RFP Func: ATAs for all token interactions)"
 # owner = the wallet's creator account; --fund-from seeds the owner's input ATA
@@ -80,6 +100,14 @@ chk "lbp create-sale" "$L" lbp create-sale --program "$LPAD_LBP_PROGRAM_ID" --co
 LBP7=$(pool_id "$N7")
 chk "lbp close"    "$L" lbp close    --program "$LPAD_LBP_PROGRAM_ID" --pool "$LBP7" --creator "$LPAD_CREATOR"
 chk "lbp withdraw" "$L" lbp withdraw --program "$LPAD_LBP_PROGRAM_ID" --pool "$LBP7" --creator-collateral "$LPAD_COLL_HOLD" --creator-token "$LPAD_PROJ_HOLD" --creator "$LPAD_CREATOR"
+
+echo "## ONLINE - allowlist-gated LBP (single-member tree: root == leaf(buyer), empty proof)"
+GN="$(( N7 + 1 ))"   # numeric, distinct from the lifecycle LBP sale's nonce (N7)
+GROOT=$("$L" lbp allowlist-leaf --account "$LPAD_BUYER_COLL" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["leaf"])')
+GTS=$(date +%s%3N); GTE=$(( GTS + 31536000000 ))   # now .. now+1yr (under the ~10yr cap)
+chk "lbp create-sale (gated)" "$L" lbp create-sale --program "$LPAD_LBP_PROGRAM_ID" --collateral-def "$LPAD_COLL_DEF" --treasury "$LPAD_TREASURY" --creator-token-holding "$LPAD_PROJ_HOLD" --creator-collateral-holding "$LPAD_COLL_HOLD" --creator "$LPAD_CREATOR" --token-deposit 1000 --collateral-seed 100 --w-start 0.9 --w-end 0.1 --t-start "$GTS" --t-end "$GTE" --allowlist-root "$GROOT" --nonce "$GN"
+GPOOL=$(pool_id "$GN")
+chk "lbp buy-gated" "$L" lbp buy-gated --program "$LPAD_LBP_PROGRAM_ID" --pool "$GPOOL" --buyer-collateral "$LPAD_BUYER_COLL" --buyer-token "$LPAD_BUYER_TOK" --in 50 --min-out 0
 
 echo
 echo "=== $PASS passed, $FAIL failed ==="
