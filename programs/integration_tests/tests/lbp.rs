@@ -126,9 +126,11 @@ fn open_pool(i: &Ids) -> PoolState {
 }
 
 fn seed_open_pool(state: &mut V03State, i: &Ids) {
-    let mut pool_acc = Account::default();
-    pool_acc.program_owner = lbp();
-    pool_acc.data = Data::from(&open_pool(i));
+    let pool_acc = Account {
+        program_owner: lbp(),
+        data: Data::from(&open_pool(i)),
+        ..Default::default()
+    };
     state.force_insert_account(i.pool, pool_acc);
     state.force_insert_account(i.token_vault, fungible(i.token_def, RESERVE_TOKEN));
 }
@@ -137,9 +139,11 @@ fn seed_open_pool(state: &mut V03State, i: &Ids) {
 fn seed_gated_pool(state: &mut V03State, i: &Ids, allowlist_root: [u8; 32]) {
     let mut p = open_pool(i);
     p.allowlist_root = allowlist_root;
-    let mut pool_acc = Account::default();
-    pool_acc.program_owner = lbp();
-    pool_acc.data = Data::from(&p);
+    let pool_acc = Account {
+        program_owner: lbp(),
+        data: Data::from(&p),
+        ..Default::default()
+    };
     state.force_insert_account(i.pool, pool_acc);
     state.force_insert_account(i.token_vault, fungible(i.token_def, RESERVE_TOKEN));
 }
@@ -476,9 +480,11 @@ fn withdraw_taxes_only_raised_collateral_and_pays_the_creator() {
     let mut p = open_pool(&i);
     p.status = SaleStatus::Closed;
     p.cum_collateral_in = raised;
-    let mut pool_acc = Account::default();
-    pool_acc.program_owner = lbp();
-    pool_acc.data = Data::from(&p);
+    let pool_acc = Account {
+        program_owner: lbp(),
+        data: Data::from(&p),
+        ..Default::default()
+    };
     state.force_insert_account(i.pool, pool_acc);
     state.force_insert_account(i.collateral_vault, fungible(i.collateral_def, vault_collateral));
     state.force_insert_account(i.token_vault, fungible(i.token_def, unsold_tokens));

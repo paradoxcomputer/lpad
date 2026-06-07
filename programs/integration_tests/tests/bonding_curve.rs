@@ -140,9 +140,11 @@ fn open_sale(i: &Ids, one_directional: bool) -> SaleState {
 /// Seed an open sale: sale state (owned by BC), token vault (holding D+R), and
 /// an empty treasury collateral holding.
 fn seed_open_sale(state: &mut V03State, i: &Ids) {
-    let mut sale_acc = Account::default();
-    sale_acc.program_owner = bc();
-    sale_acc.data = Data::from(&open_sale(i, false));
+    let sale_acc = Account {
+        program_owner: bc(),
+        data: Data::from(&open_sale(i, false)),
+        ..Default::default()
+    };
     state.force_insert_account(i.sale, sale_acc);
     state.force_insert_account(i.token_vault, fungible(i.token_def, D + R));
     state.force_insert_account(i.treasury, fungible(i.collateral_def, 0));

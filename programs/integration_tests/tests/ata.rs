@@ -65,6 +65,10 @@ fn deploy(state: &mut V03State) {
         ata_methods::ATA_ELF.to_vec(),
         bonding_curve_methods::BONDING_CURVE_ELF.to_vec(),
     ] {
+        assert!(
+            !elf.is_empty(),
+            "guest ELFs not built; run without RISC0_SKIP_BUILD"
+        );
         let msg = program_deployment_transaction::Message::new(elf);
         state
             .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(msg))
@@ -135,9 +139,11 @@ fn open_sale(i: &Ids, real_collateral: u128) -> SaleState {
 /// does), since the ATA collateral leg's `ata::Transfer` rejects a default
 /// recipient. `vault_collateral` seeds the collateral vault balance.
 fn seed_sale(state: &mut V03State, i: &Ids, real_collateral: u128, vault_collateral: u128) {
-    let mut sale_acc = Account::default();
-    sale_acc.program_owner = bc();
-    sale_acc.data = Data::from(&open_sale(i, real_collateral));
+    let sale_acc = Account {
+        program_owner: bc(),
+        data: Data::from(&open_sale(i, real_collateral)),
+        ..Default::default()
+    };
     state.force_insert_account(i.sale, sale_acc);
     state.force_insert_account(i.token_vault, fungible(i.token_def, D + R));
     state.force_insert_account(i.collateral_vault, fungible(i.collateral_def, vault_collateral));

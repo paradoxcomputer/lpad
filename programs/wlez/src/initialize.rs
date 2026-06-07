@@ -8,7 +8,7 @@
 //! this runs the post-states are:
 //!
 //!   - vault.program_owner       = wlez_program_id    balance = 0
-//!                                 data = encode_program_id(native_program_id)
+//!     data = encode_program_id(native_program_id)
 //!   - definition.program_owner  = token_program_id   TokenDefinition::Fungible{name:"WLEZ", total_supply:0}
 //!   - init_holding.program_owner= token_program_id   TokenHolding::Fungible{..., balance:0}
 //!
@@ -25,6 +25,7 @@ use wlez_core::{
     get_wlez_definition_id, get_wlez_vault_id, WLEZ_NAME,
 };
 
+#[expect(clippy::too_many_arguments, reason = "fixed protocol account/param list")]
 pub fn initialize(
     vault: AccountWithMetadata,
     definition: AccountWithMetadata,

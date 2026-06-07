@@ -37,10 +37,10 @@ pub fn apply_buy(
     assert!(t_ms >= state.t_start_ms, "sale has not started");
     assert!(t_ms < state.t_end_ms, "sale has ended");
 
-    let weight = state.weight_token_q64(t_ms);
     let tokens_out = if state.fixed_price {
         fixed_price_tokens_out(collateral_in, state.fixed_price_q64)
     } else {
+        let weight = state.weight_token_q64(t_ms);
         buy_tokens_out(state.reserve_token, state.reserve_collateral, weight, collateral_in)
     };
     assert!(tokens_out >= 1, "computed tokens_out is zero (input too small)");
