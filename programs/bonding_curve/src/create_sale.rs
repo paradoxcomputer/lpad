@@ -17,7 +17,7 @@
 use bonding_curve_core::{
     compute_collateral_vault_pda, compute_collateral_vault_pda_seed, compute_sale_pda,
     compute_token_vault_pda, compute_token_vault_pda_seed, read_fungible, SaleState, SaleStatus,
-    MAX_FEE_BPS, MAX_VIRT_COLLATERAL,
+    MAX_FEE_BPS, MAX_METADATA_LEN, MAX_VIRT_COLLATERAL,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
@@ -91,6 +91,15 @@ pub fn create_sale(
         "max reachable Vc exceeds the Q64.64 spot-price domain (choose larger Vt-D or smaller Vc)"
     );
     assert!(creator.is_authorized, "creator must authorize sale creation");
+    // Bound the self-describing metadata so the serialized sale state stays under
+    // Data's 100 KiB cap even once the 64-entry observation ring fills; an
+    // unbounded name/symbol could otherwise grow the state across that cap
+    // mid-life, panicking the SaleState->Data encode on every later buy/sell/close
+    // and permanently locking deposited collateral.
+    assert!(
+        token_name.len() <= MAX_METADATA_LEN && token_symbol.len() <= MAX_METADATA_LEN,
+        "token name/symbol exceed the maximum metadata length"
+    );
     // SECURITY: BuyAta/SellAta dispatch the user's token/collateral leg through
     // this pinned program (an owner-authorized PDA spend). A zero/default id can
     // never name a real ATA program, so it could only resolve to a no-op leg that

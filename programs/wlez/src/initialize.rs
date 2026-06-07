@@ -8,6 +8,7 @@
 //! this runs the post-states are:
 //!
 //!   - vault.program_owner       = wlez_program_id    balance = 0
+//!                                 data = encode_program_id(native_program_id)
 //!   - definition.program_owner  = token_program_id   TokenDefinition::Fungible{name:"WLEZ", total_supply:0}
 //!   - init_holding.program_owner= token_program_id   TokenHolding::Fungible{..., balance:0}
 //!
@@ -31,6 +32,8 @@ pub fn initialize(
     reference_token_def: AccountWithMetadata,
     payer: AccountWithMetadata,
     wlez_program_id: ProgramId,
+    expected_token_program_id: ProgramId,
+    native_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     // 1. Verify the PDAs match the seeds we'll sign with.
     assert_eq!(
@@ -44,7 +47,17 @@ pub fn initialize(
         "definition account_id does not match WLEZ definition PDA"
     );
 
-    let token_program_id = reference_token_def.account.program_owner;
+    // The WLEZ definition PDA is a fixed, claim-once address; the program
+    // it is created under is whatever `reference_token_def` is owned by.
+    // Pin that to the caller-supplied canonical token program so a
+    // malicious reference definition can't redirect the WLEZ definition's
+    // owning program at bootstrap (it would then control WLEZ mint
+    // accounting for the launchpad's native-LEZ collateral).
+    assert_eq!(
+        reference_token_def.account.program_owner, expected_token_program_id,
+        "reference_token_def must be owned by the expected token program"
+    );
+    let token_program_id = expected_token_program_id;
 
     // 2. Idempotency - if the vault is already claimed by this program
     //    AND the definition is already token-program-owned, this call is
@@ -89,10 +102,16 @@ pub fn initialize(
     //    program_owner eagerly trips rule 4 of validate_execution
     //    (`pre.program_owner != post.program_owner` is forbidden) and
     //    the sequencer rejects the whole tx with ModifiedProgramOwner.
-    let vault_post_claimed = AccountPostState::new_claimed(
-        vault.account.clone(),
-        Claim::Pda(compute_wlez_vault_seed()),
-    );
+    // Record the trusted native/authenticated-transfer program id in the
+    // vault's `data`. Wrap reads it back to pin its native-transfer leg, so
+    // a submitter can't route the escrow through a no-op native program and
+    // mint unbacked WLEZ. The native transfer only touches `balance`, so this
+    // `data` survives every later Wrap (see authenticated_transfer::transfer).
+    let mut vault_init = vault.account.clone();
+    vault_init.data = Data::try_from(wlez_core::encode_program_id(&native_program_id).to_vec())
+        .expect("32-byte native program id always fits within Data");
+    let vault_post_claimed =
+        AccountPostState::new_claimed(vault_init, Claim::Pda(compute_wlez_vault_seed()));
 
     // 5. Definition + init-holding will be written by the chained
     //    NewFungibleDefinition call; emit passthrough post-states.

@@ -11,7 +11,8 @@
 use lbp_core::{
     compute_collateral_vault_pda, compute_collateral_vault_pda_seed, compute_pool_pda,
     compute_pool_pda_seed, compute_token_vault_pda, compute_token_vault_pda_seed, fixed::ONE,
-    read_fungible, spot_price_q64, PoolState, SaleStatus, MAX_DURATION_MS, MAX_FEE_BPS, MAX_RESERVE,
+    read_fungible, spot_price_q64, PoolState, SaleStatus, MAX_DURATION_MS, MAX_FEE_BPS,
+    MAX_METADATA_LEN, MAX_RESERVE,
 };
 use nssa_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
@@ -65,6 +66,15 @@ pub fn create_sale(
         "reserves exceed the 64-bit Q64.64 domain (>= 2^64)"
     );
     assert!(creator.is_authorized, "creator must authorize sale creation");
+    // Bound the self-describing metadata so the serialized pool state stays under
+    // Data's 100 KiB cap even once the 64-entry observation ring fills; an
+    // unbounded name/symbol could otherwise grow the state across that cap
+    // mid-life, panicking the PoolState->Data encode on every later buy/sell/close
+    // and permanently locking deposited collateral. Mirrors bonding_curve.
+    assert!(
+        token_name.len() <= MAX_METADATA_LEN && token_symbol.len() <= MAX_METADATA_LEN,
+        "token name/symbol exceed the maximum metadata length"
+    );
     // SECURITY (mirrors bonding_curve::create_sale): a default/zero ata_program_id
     // can never name a real ATA program, so BuyAta would dispatch the buyer's
     // collateral leg to a no-op that skips the real token::Transfer. Reject it
@@ -200,8 +210,13 @@ pub fn create_sale(
         &token_core::Instruction::Transfer { amount_to_transfer: token_deposit },
     )
     .with_pda_seeds(vec![compute_token_vault_pda_seed(pool_id)]);
+    // Derive the collateral leg's program from the collateral holding being
+    // debited (mirrors bonding_curve::create_sale, which uses the collateral
+    // side's program_owner), so a distinct collateral token program is dispatched
+    // correctly rather than reusing the project token's program.
+    let collateral_token_program_id = creator_collateral_holding.account.program_owner;
     let deposit_collateral = ChainedCall::new(
-        token_program_id,
+        collateral_token_program_id,
         vec![creator_collateral_holding.clone(), authorized(&collateral_vault)],
         &token_core::Instruction::Transfer { amount_to_transfer: collateral_seed },
     )

@@ -43,11 +43,24 @@ pub enum Instruction {
     /// Required accounts (3):
     ///   - Vault (PDA, default or already-claimed)
     ///   - WLEZ definition (PDA, default or already-initialised)
-    ///   - A reference token-program definition account, used only to
-    ///     pull `token_program_id = program_owner`. Any existing
-    ///     token-program-owned definition works (e.g. a TokenA def
-    ///     from the bootstrap).
-    Initialize,
+    ///   - A reference token-program definition account. Its
+    ///     `program_owner` must equal `token_program_id` (the caller-
+    ///     pinned canonical token program); this is the program the
+    ///     WLEZ definition will be created under. Pinning the expected
+    ///     id prevents a malicious reference definition from redirecting
+    ///     the WLEZ definition's owning program at bootstrap.
+    ///
+    /// `native_program_id` is the canonical native/authenticated-transfer
+    /// program; Initialize records it in the vault's `data` so that every
+    /// later `Wrap` can pin the native-transfer leg to it (a submitter who
+    /// supplied a no-op native program owning their `user_native` could
+    /// otherwise skip the real escrow and mint unbacked WLEZ). Like
+    /// `token_program_id`, it is trusted at bootstrap (the deployer pins
+    /// it); the runtime defence is the per-Wrap check against this stored id.
+    Initialize {
+        token_program_id: ProgramId,
+        native_program_id: ProgramId,
+    },
 
     /// Lock `amount` native LEZ into the vault, mint `amount` WLEZ to
     /// the user's holding.
@@ -133,3 +146,34 @@ pub fn get_wlez_init_holding_id(wlez_program_id: &ProgramId) -> AccountId {
 /// Default WLEZ token symbol - used in the `token::NewDefinition` call
 /// inside `Initialize`. Kept short so the symbol fits in a UI chip.
 pub const WLEZ_NAME: &str = "WLEZ";
+
+/// Encode a `ProgramId` (`[u32; 8]`) as 32 little-endian bytes for storage
+/// in an account's `data`. `Initialize` records the trusted native program
+/// id this way in the vault; `Wrap` reads it back with
+/// [`decode_program_id`]. Dependency-free + byte-stable so the encoding is
+/// identical across every build of the program.
+#[must_use]
+pub fn encode_program_id(id: &ProgramId) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, word) in id.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+/// Decode a `ProgramId` from exactly 32 little-endian bytes (the inverse of
+/// [`encode_program_id`]). Returns `None` if the slice is not 32 bytes long
+/// (e.g. a vault that predates the pinned-native-program field).
+#[must_use]
+pub fn decode_program_id(bytes: &[u8]) -> Option<ProgramId> {
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    let mut id = [0u32; 8];
+    for (i, word) in id.iter_mut().enumerate() {
+        *word = u32::from_le_bytes(
+            arr[i * 4..i * 4 + 4]
+                .try_into()
+                .expect("4-byte chunk of a 32-byte array"),
+        );
+    }
+    Some(id)
+}

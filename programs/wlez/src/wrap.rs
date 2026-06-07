@@ -17,7 +17,7 @@ use nssa_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 use wlez_core::{
-    compute_wlez_definition_seed, get_wlez_definition_id, get_wlez_vault_id,
+    compute_wlez_definition_seed, decode_program_id, get_wlez_definition_id, get_wlez_vault_id,
 };
 
 pub fn wrap(
@@ -50,7 +50,21 @@ pub fn wrap(
         "User authorization is missing on the native source account"
     );
 
-    let native_program_id = user_native.account.program_owner;
+    // SECURITY: pin the native-transfer leg to the program id recorded in
+    // the vault at Initialize, NOT to `user_native.program_owner` (which the
+    // submitter chooses). A no-op program owning the user's "native" account
+    // would otherwise leave the vault uncredited while the mint below still
+    // runs, minting unbacked WLEZ - and because such a leg leaves both
+    // accounts unchanged, total native balance is conserved, so the
+    // framework's MismatchedTotalBalance rule never fires. Requiring
+    // user_native to be owned by the pinned native program forces the escrow
+    // through the real authenticated-transfer program.
+    let native_program_id = decode_program_id(vault.account.data.as_ref())
+        .expect("WLEZ vault is missing its pinned native program id; re-run Initialize");
+    assert_eq!(
+        user_native.account.program_owner, native_program_id,
+        "user_native must be owned by the pinned native (authenticated-transfer) program"
+    );
     let token_program_id = definition.account.program_owner;
 
     // Sanity: user_holding must be initialised for the WLEZ definition.

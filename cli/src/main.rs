@@ -277,7 +277,7 @@ fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<Stri
             // bound the post-trade reserve and product so a large `--in` errors cleanly
             // rather than panicking inside `buy_tokens_out`/`spot_price_q64`.
             let c_eff = collateral_in - bc::buy_fee(collateral_in, fee_bps);
-            if vc.checked_add(c_eff).map_or(true, |v| v >= (1u128 << 64)) {
+            if vc.checked_add(c_eff).is_none_or(|v| v >= (1u128 << 64)) {
                 return Err("collateral_in pushes the post-buy reserve past the Q64.64 domain (vc + effective collateral >= 2^64); use a smaller amount".into());
             }
             if vt.checked_mul(c_eff).is_none() {
@@ -432,7 +432,7 @@ fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<St
             if reserve_token >= (1u128 << 64) || reserve_collateral >= (1u128 << 64) {
                 return Err("reserves must be < 2^64 (the Q64.64 domain)".into());
             }
-            if reserve_collateral.checked_add(collateral_in).map_or(true, |t| t >= lbp::MAX_RESERVE) {
+            if reserve_collateral.checked_add(collateral_in).is_none_or(|t| t >= lbp::MAX_RESERVE) {
                 return Err("reserve_collateral + collateral_in must stay < 2^64 (the Q64.64 domain)".into());
             }
             let price = q64_to_f64(lbp::spot_price_q64(reserve_token, reserve_collateral, wt));

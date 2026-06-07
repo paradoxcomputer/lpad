@@ -11,9 +11,17 @@ use nssa_core::{
 
 use crate::util::authorized;
 
+/// Recovery floor for a no-timeout sale (`end_timestamp_ms == 0`). After this
+/// much wall-clock time has elapsed since creation, the creator may close a
+/// stalled sale that never reached its supply target, so the raised collateral
+/// and DEX-seed tokens are recoverable rather than locked forever. 7 days in ms.
+const RECOVERY_FLOOR_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+
 /// `CloseSale` - manual close by the creator. Permitted once the configured end
 /// timestamp has passed, or if the supply target is already exhausted
-/// (idempotent with the auto-close that fires on the final buy).
+/// (idempotent with the auto-close that fires on the final buy), or - for a
+/// no-timeout sale (`end_timestamp_ms == 0`) - once the recovery floor has
+/// elapsed since creation so a stalled sale's funds are recoverable.
 ///
 /// Account order: `[sale, creator, clock]`.
 #[must_use]
@@ -35,8 +43,17 @@ pub fn close_sale(
     let now = u64::try_from(clock_ts.max(0)).unwrap_or(0);
     let timed_out = state.end_timestamp_ms != 0 && now >= state.end_timestamp_ms;
     let supply_done = state.sale_reserve == 0;
+    // Recovery path for a no-timeout sale that stalls below the supply target:
+    // without this it could never close (and the creator could never withdraw),
+    // locking the raised collateral. The floor (>= min_duration_ms) keeps an
+    // active sale from being closed early.
+    let recoverable = state.end_timestamp_ms == 0 && {
+        let created = u64::try_from(state.created_ts_ms.max(0)).unwrap_or(0);
+        let elapsed_floor = state.min_duration_ms.max(RECOVERY_FLOOR_MS);
+        now >= created.saturating_add(elapsed_floor)
+    };
     assert!(
-        timed_out || supply_done,
+        timed_out || supply_done || recoverable,
         "cannot close: supply target not reached and end timestamp not passed (or unset)"
     );
 

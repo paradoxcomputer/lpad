@@ -102,7 +102,10 @@ fn vault_with(balance: u128) -> AccountWithMetadata {
         account: Account {
             program_owner: WLEZ_PROGRAM_ID,
             balance,
-            data: Data::default(),
+            // Initialize stores the pinned native program id in the vault's
+            // data; Wrap reads it back to authorise the native-transfer leg.
+            data: Data::try_from(wlez_core::encode_program_id(&NATIVE_PROGRAM_ID).to_vec())
+                .expect("32-byte native id fits in Data"),
             nonce: Nonce(0),
         },
         is_authorized: false,
@@ -154,6 +157,8 @@ fn initialize_claims_vault_and_chains_new_definition() {
         reference_token_def(),
         payer_default(),
         WLEZ_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        NATIVE_PROGRAM_ID,
     );
     // Post-states: vault (claimed), definition (passthrough), init_holding (passthrough), ref-token-def (passthrough), payer (passthrough).
     assert_eq!(post_states.len(), 5);
@@ -171,6 +176,13 @@ fn initialize_claims_vault_and_chains_new_definition() {
         post_states[0].account().program_owner,
         nssa_core::program::DEFAULT_PROGRAM_ID,
         "vault post-state must keep DEFAULT_PROGRAM_ID; framework claims via Claim::Pda"
+    );
+    // The vault records the pinned native program id in its data so Wrap can
+    // authorise its native-transfer leg against it.
+    assert_eq!(
+        wlez_core::decode_program_id(post_states[0].account().data.as_ref()),
+        Some(NATIVE_PROGRAM_ID),
+        "vault post-state must record the pinned native program id"
     );
 
     // One chained call to NewFungibleDefinition on the token program.
@@ -215,6 +227,8 @@ fn initialize_is_idempotent_after_first_run() {
         reference_token_def(),
         payer_default(),
         WLEZ_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        NATIVE_PROGRAM_ID,
     );
     assert!(chained.is_empty(), "Second Initialize must emit no chained calls");
 }
@@ -231,6 +245,8 @@ fn initialize_rejects_wrong_vault_id() {
         reference_token_def(),
         payer_default(),
         WLEZ_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        NATIVE_PROGRAM_ID,
     );
 }
 
@@ -318,6 +334,24 @@ fn wrap_rejects_wrong_holding_definition() {
     );
 }
 
+#[test]
+#[should_panic(expected = "user_native must be owned by the pinned native")]
+fn wrap_rejects_foreign_native_program() {
+    // The vault pins NATIVE_PROGRAM_ID; a user_native owned by some OTHER
+    // program (e.g. an attacker's no-op "native" program that would skip the
+    // real escrow) must be rejected before any WLEZ is minted.
+    let mut foreign_native = user_native_with(/*balance*/ 1000, /*authorized*/ true);
+    foreign_native.account.program_owner = [9u32; 8];
+    let _ = crate::wrap::wrap(
+        foreign_native,
+        vault_with(0),
+        definition_initialized(0),
+        user_holding_with(0, false),
+        250,
+        WLEZ_PROGRAM_ID,
+    );
+}
+
 // ── Unwrap ──────────────────────────────────────────────────────────
 
 #[test]
@@ -399,7 +433,10 @@ fn instruction_enum_roundtrips_serde() {
     // dispatcher's `serde_json::from_slice` doesn't silently break on a
     // refactor.
     for ix in [
-        Instruction::Initialize,
+        Instruction::Initialize {
+            token_program_id: TOKEN_PROGRAM_ID,
+            native_program_id: NATIVE_PROGRAM_ID,
+        },
         Instruction::Wrap { amount: 42 },
         Instruction::Unwrap { amount: u128::MAX / 2 },
     ] {

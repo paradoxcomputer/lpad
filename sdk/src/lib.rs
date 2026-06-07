@@ -59,15 +59,12 @@ pub struct TokenSaleArgs {
     pub nonce: u64,
 }
 
-/// Pull `(name, symbol)` out of a `data:application/json,{...}` metadata URI.
+/// Pull `(name, symbol)` out of a `data:application/json,{...}` metadata URI,
+/// decoding JSON escapes so quote/backslash-containing labels round-trip.
 fn parse_name_symbol(uri: &str) -> Option<(String, String)> {
     let json = uri.split_once(',').map_or(uri, |(_, j)| j);
-    let field = |k: &str| -> Option<String> {
-        let pat = format!("\"{k}\":\"");
-        let start = json.find(&pat)? + pat.len();
-        let end = json[start..].find('"')? + start;
-        Some(json[start..end].to_owned())
-    };
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let field = |k: &str| value.get(k)?.as_str().map(str::to_owned);
     Some((field("name")?, field("symbol")?))
 }
 
@@ -127,7 +124,7 @@ pub fn bc_quote(state: &SaleState, collateral_in: u128) -> BcQuote {
     let out_of_domain = state
         .virt_collateral
         .checked_add(c_eff)
-        .map_or(true, |v| v >= bonding_curve_core::MAX_VIRT_COLLATERAL)
+        .is_none_or(|v| v >= bonding_curve_core::MAX_VIRT_COLLATERAL)
         || state.virt_token.checked_mul(c_eff).is_none();
     if out_of_domain {
         return BcQuote {
@@ -179,7 +176,7 @@ pub fn lbp_quote(state: &PoolState, at_ms: u64, collateral_in: u128) -> LbpQuote
     let out_of_domain = if state.fixed_price {
         collateral_in >= lbp_core::MAX_RESERVE
     } else {
-        state.reserve_collateral.checked_add(collateral_in).map_or(true, |t| t >= lbp_core::MAX_RESERVE)
+        state.reserve_collateral.checked_add(collateral_in).is_none_or(|t| t >= lbp_core::MAX_RESERVE)
             || state.reserve_token >= lbp_core::MAX_RESERVE
     };
     if out_of_domain {
@@ -739,7 +736,17 @@ impl LaunchpadClient {
             wlez_program,
             vec![vault, def, init_holding, reference_token_def, payer],
             &[payer],
-            wlez_core::Instruction::Initialize,
+            wlez_core::Instruction::Initialize {
+                // Pin the canonical token program so a malicious reference
+                // definition can't redirect the WLEZ definition's owning
+                // program at bootstrap.
+                token_program_id: Program::token().id(),
+                // Pin the canonical native/authenticated-transfer program so
+                // every later Wrap escrows through the real native program
+                // (Wrap checks user_native against this stored id, preventing
+                // an unbacked-WLEZ mint via a no-op native program).
+                native_program_id: Program::authenticated_transfer_program().id(),
+            },
         )
     }
 
@@ -1030,7 +1037,8 @@ impl LaunchpadClient {
         let (holding, _) = self.wallet.create_new_account_public(None);
         let (metadata, _) = self.wallet.create_new_account_public(None);
         self.persist()?;
-        let uri = format!("data:application/json,{{\"name\":\"{name}\",\"symbol\":\"{symbol}\"}}");
+        let body = serde_json::json!({ "name": name, "symbol": symbol }).to_string();
+        let uri = format!("data:application/json,{body}");
         self.report("minting token + metadata");
         self.submit_public(
             Program::token().id(),
@@ -1099,7 +1107,10 @@ impl LaunchpadClient {
     /// shielded holding (mint → shield deposit → deshield into A → create-sale).
     /// An observer can't tie the sale to the real minter. Returns `(sale, def, tx)`.
     pub fn bc_create_token_sale_private(&mut self, t: TokenSaleArgs) -> Result<(AccountId, AccountId, TxHash)> {
-        let deposit = t.sale_quantity + t.dex_seed;
+        let deposit = t
+            .sale_quantity
+            .checked_add(t.dex_seed)
+            .ok_or_else(|| "sale_quantity + dex_seed overflows u128".to_string())?;
         let (proj_def, proj_holding) =
             self.mint_token_with_metadata(&t.name, &t.symbol, t.total_supply)?;
         // Shield the deposit so the funding source is private.

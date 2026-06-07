@@ -121,7 +121,7 @@ fn deploy_and_initialize(state: &mut V03State, payer_key: &PrivateKey) {
         wlez(),
         vec![vault, definition, init_holding, reference, payer],
         vec![Nonce(0)],
-        Instruction::Initialize,
+        Instruction::Initialize { token_program_id: token(), native_program_id: native() },
     )
     .unwrap();
     let witness = public_transaction::WitnessSet::for_message(&message, &[payer_key]);

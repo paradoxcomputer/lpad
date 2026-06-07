@@ -23,6 +23,8 @@ mod wlez {
         init_holding: AccountWithMetadata,
         reference_token_def: AccountWithMetadata,
         payer: AccountWithMetadata,
+        token_program_id: nssa_core::program::ProgramId,
+        native_program_id: nssa_core::program::ProgramId,
     ) -> SpelResult {
         let (post_states, chained_calls) = wlez_program::initialize::initialize(
             vault,
@@ -31,6 +33,8 @@ mod wlez {
             reference_token_def,
             payer,
             ctx.self_program_id,
+            token_program_id,
+            native_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(post_states, chained_calls))
     }

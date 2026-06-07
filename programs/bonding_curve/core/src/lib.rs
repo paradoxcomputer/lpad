@@ -40,6 +40,14 @@ pub const MAX_VIRT_COLLATERAL: u128 = 1u128 << 64;
 /// indexer, matching the ldex AMM oracle approach).
 pub const ORACLE_RING_CAP: usize = 64;
 
+/// Maximum byte length of the self-describing `token_name`/`token_symbol`
+/// metadata copied into the sale state. Bounded at creation so the serialized
+/// state stays well under `Data`'s `DATA_MAX_LENGTH` (100 KiB) even once the
+/// 64-entry observation ring fills - an unbounded creator-set string could
+/// otherwise grow the state across that cap mid-life, panicking the
+/// `From<&SaleState> for Data` encode and reverting every buy/sell/close.
+pub const MAX_METADATA_LEN: usize = 64;
+
 /// Canonical on-chain Clock account (sequencer-updated every block). Threaded
 /// read-only into the public buy/sell paths for the optional end-timestamp
 /// check and analytics timestamps. Private paths omit it (proof-time drift).
@@ -562,6 +570,27 @@ mod tests {
             assert!(p >= last_price, "price must rise as tokens are bought");
             last_price = p;
         }
+    }
+
+    #[test]
+    fn spot_price_saturates_at_domain_boundary() {
+        // At/above MAX_VIRT_COLLATERAL the `<< 64` would wrap (overflow-checks are
+        // off in the release guest) and poison the observation ring. The guard must
+        // saturate to u128::MAX instead of returning a wrapped value.
+        assert_eq!(spot_price_q64(MAX_VIRT_COLLATERAL, 1), u128::MAX);
+        assert_eq!(spot_price_q64(MAX_VIRT_COLLATERAL, VT0), u128::MAX);
+        assert_eq!(spot_price_q64(u128::MAX, VT0), u128::MAX);
+
+        // Wrapped value the unclamped `<< 64` would yield at the boundary: for
+        // Vc == 2^64 the shift overflows to 0, so the (poisoned) price would be 0 -
+        // proving the saturation is load-bearing, not cosmetic.
+        assert_eq!(MAX_VIRT_COLLATERAL.wrapping_shl(64), 0);
+
+        // Just under the boundary stays priceable (no saturation) and finite.
+        let just_under = MAX_VIRT_COLLATERAL - 1;
+        let p = spot_price_q64(just_under, VT0);
+        assert!(p < u128::MAX, "price below the domain boundary must not saturate");
+        assert_eq!(p, (just_under << 64) / VT0);
     }
 
     #[test]

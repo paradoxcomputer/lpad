@@ -28,6 +28,15 @@ pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
 pub const MAX_FEE_BPS: u128 = 1_000;
 pub const ORACLE_RING_CAP: usize = 64;
 
+/// Maximum byte length of the self-describing `token_name`/`token_symbol`
+/// metadata copied into the pool state. Bounded at creation so the serialized
+/// state stays well under `Data`'s `DATA_MAX_LENGTH` (100 KiB) even once the
+/// 64-entry observation ring fills - an unbounded creator-set string could
+/// otherwise grow the state across that cap mid-life, panicking the
+/// `From<&PoolState> for Data` encode and reverting every buy/sell/close.
+/// Mirrors `bonding_curve_core::MAX_METADATA_LEN`.
+pub const MAX_METADATA_LEN: usize = 64;
+
 /// Maximum sale-schedule span (`t_end_ms - t_start_ms`), ~10 years in ms. The
 /// linear weight interpolation in [`weight_token_q64`] forms `delta * elapsed`
 /// with `delta` up to ~2^64 (Q64.64 weight gap) and `elapsed` up to the span;
