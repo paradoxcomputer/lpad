@@ -149,9 +149,19 @@ pub fn sell(
         token_def, state.token_definition_id,
         "seller token holding does not match the sale's project token definition"
     );
+    // SECURITY: leg 1 returns the seller's tokens to the PDA-anchored token vault,
+    // so it must run on the vault's real token program - not whatever program owns
+    // the submitter-chosen seller holding. Otherwise a holding owned by a no-op
+    // EVIL program would let leg 1 silently skip the token return while the
+    // collateral payout (legs 2/3) still drains the vault. Mirrors the buy-path
+    // collateral-type defense and the ATA program pin.
+    assert_eq!(
+        seller_token_holding.account.program_owner, token_vault.account.program_owner,
+        "seller token holding is not owned by the sale's token program"
+    );
 
     let outcome = apply_sell(state, tokens_in, min_collateral_out, clock_ts);
-    let token_program_id = seller_token_holding.account.program_owner;
+    let token_program_id = token_vault.account.program_owner;
     let sale_id = sale.account_id;
     let mut calls = Vec::with_capacity(3);
 

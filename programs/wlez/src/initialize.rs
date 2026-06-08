@@ -17,7 +17,7 @@
 
 use nssa_core::{
     account::{Account, AccountWithMetadata, Data},
-    program::{AccountPostState, ChainedCall, Claim, ProgramId},
+    program::{AccountPostState, ChainedCall, Claim, ProgramId, DEFAULT_PROGRAM_ID},
 };
 use token_core::{TokenDefinition, TokenHolding};
 use wlez_core::{
@@ -48,28 +48,57 @@ pub fn initialize(
         "definition account_id does not match WLEZ definition PDA"
     );
 
-    // The WLEZ definition PDA is a fixed, claim-once address; the program
-    // it is created under is whatever `reference_token_def` is owned by.
-    // Pin that to the caller-supplied canonical token program so a
-    // malicious reference definition can't redirect the WLEZ definition's
-    // owning program at bootstrap (it would then control WLEZ mint
-    // accounting for the launchpad's native-LEZ collateral).
+    // SECURITY: the WLEZ definition PDA is a fixed, claim-once address created
+    // under whatever token program is pinned here, and that program controls
+    // WLEZ mint/burn accounting for the launchpad's native-LEZ collateral
+    // forever after. Initialize is permissionless, so a front-running attacker
+    // could otherwise pin a malicious "token" program (chaining the
+    // NewFungibleDefinition into it) and then mint unbacked WLEZ to drain the
+    // vault via Unwrap. Unlike the native program, the canonical token program
+    // CANNOT be pinned to a compile-time literal the way `native_program_id` is
+    // below: a token program is addressed by its guest image id, which is
+    // host-computed (`nssa::Program::token().id()` -> `compute_image_id`, not
+    // available in-guest) and build-variable - and the live wallet built-in
+    // `Program::token()` and the integration tests' separately-built
+    // `token_methods` guest have DIFFERENT image ids, so no single literal is
+    // correct in both. Instead - mirroring the ATA pin in
+    // `bonding_curve::create_sale` - two on-chain gates apply here, and the SDK
+    // validates the pin against the deployed token program participant-side
+    // before any later Wrap/Unwrap commits real LEZ (see
+    // `LaunchpadClient::wlez_token_program_checked`), which downgrades a
+    // front-run from a vault drain to a recoverable DoS (no honest LEZ is ever
+    // wrapped into a mis-pinned WLEZ):
+    //   1. The pinned id must be a real program: a zero/default id can only
+    //      resolve to a no-op leg whose chained Mint/Burn silently does nothing
+    //      while the vault still pays out.
+    assert_ne!(
+        expected_token_program_id, DEFAULT_PROGRAM_ID,
+        "token_program_id must be a real token program (not the default/zero id)"
+    );
+    //   2. The reference definition must actually be owned by the pinned
+    //      program - it is the account the WLEZ definition is created under, so
+    //      a self-consistent reference at least proves the pin names a program
+    //      that already hosts token definitions.
     assert_eq!(
         reference_token_def.account.program_owner, expected_token_program_id,
         "reference_token_def must be owned by the expected token program"
     );
     let token_program_id = expected_token_program_id;
 
-    // SECURITY: `native_program_id` is a caller-supplied argument and Initialize
-    // is permissionless, so a malicious deployer could front-run the bootstrap
-    // and pin a NO-OP "native" program here. Wrap would then trust it (it reads
-    // the stored id from the vault), the escrow `authenticated_transfer` leg
-    // would silently no-op while the WLEZ Mint still ran, and the attacker could
-    // mint unbacked WLEZ. Pin it to the canonical authenticated-transfer program
-    // so only the real native program can ever be recorded in the vault.
-    assert_eq!(
-        native_program_id, wlez_core::NATIVE_PROGRAM_ID,
-        "native_program_id must be the canonical authenticated-transfer program"
+    // SECURITY: `native_program_id` is recorded in the vault and every later
+    // Wrap pins its escrow leg to it (see `wrap.rs`). Initialize is
+    // permissionless, so a front-run could pin a NO-OP "native" program here,
+    // letting Wrap skip the real escrow and mint unbacked WLEZ. Like the token
+    // program, the canonical native id is a host-computed guest image id the
+    // guest cannot know, so it cannot be pinned to a literal. We reject the
+    // trivial zero/default no-op on-chain; the SDK pins the full canonical id
+    // participant-side before any Wrap commits real LEZ (see
+    // `LaunchpadClient::wlez_programs_checked`), downgrading a front-run from an
+    // unbacked-mint drain to a recoverable DoS (honest LEZ is never wrapped into
+    // a mis-pinned WLEZ).
+    assert_ne!(
+        native_program_id, DEFAULT_PROGRAM_ID,
+        "native_program_id must be a real native program (not the default/zero id)"
     );
 
     // 2. Idempotency - if the vault is already claimed by this program

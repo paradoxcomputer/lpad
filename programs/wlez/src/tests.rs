@@ -24,9 +24,13 @@ use wlez_core::{
 };
 
 const WLEZ_PROGRAM_ID: ProgramId = [3u32; 8];
+// Any non-default id passes the on-chain DEFAULT_PROGRAM_ID reject; the SDK
+// pins the real (canonical) token program participant-side.
 const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
 // Must equal the pinned canonical native id - Initialize now asserts it.
-const NATIVE_PROGRAM_ID: ProgramId = wlez_core::NATIVE_PROGRAM_ID;
+// Any non-default id passes the on-chain DEFAULT reject; the SDK pins the real
+// (canonical) authenticated-transfer program participant-side before wrapping.
+const NATIVE_PROGRAM_ID: ProgramId = [5u32; 8];
 
 fn user_id() -> AccountId {
     AccountId::new([0xAAu8; 32])
@@ -252,11 +256,13 @@ fn initialize_rejects_wrong_vault_id() {
 }
 
 #[test]
-#[should_panic(expected = "native_program_id must be the canonical")]
-fn initialize_rejects_non_canonical_native_program() {
-    // E1: a permissionless / front-run Initialize that pins a no-op "native"
-    // program must be rejected, so Wrap can never trust an attacker-chosen
-    // native id and mint unbacked WLEZ.
+#[should_panic(expected = "native_program_id must be a real native")]
+fn initialize_rejects_default_native_program() {
+    // E1: a permissionless / front-run Initialize that pins a zero/default
+    // "native" program must be rejected on-chain - it is the trivial no-op that
+    // would let Wrap skip the escrow and mint unbacked WLEZ. (A non-default EVIL
+    // native is not rejectable on-chain - the guest cannot know the canonical
+    // image id - so the SDK pins it participant-side before wrapping.)
     let _ = crate::initialize::initialize(
         vault_default(),
         definition_default(),
@@ -265,7 +271,30 @@ fn initialize_rejects_non_canonical_native_program() {
         payer_default(),
         WLEZ_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        [9u32; 8], // attacker's EVIL program id, != the canonical native program
+        nssa_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "native" id
+    );
+}
+
+#[test]
+#[should_panic(expected = "token_program_id must be a real token program")]
+fn initialize_rejects_default_token_program() {
+    // E3: a permissionless / front-run Initialize that pins a zero/default
+    // "token" program must be rejected - it could only resolve to a no-op leg
+    // whose chained Mint/Burn silently does nothing while the vault still pays
+    // out, letting an attacker drain the native vault via Unwrap. (A non-default
+    // EVIL token id is not rejectable on-chain - the guest cannot know the
+    // canonical image id - so the SDK pins it participant-side instead.)
+    let mut zero_owned_reference = reference_token_def();
+    zero_owned_reference.account.program_owner = nssa_core::program::DEFAULT_PROGRAM_ID;
+    let _ = crate::initialize::initialize(
+        vault_default(),
+        definition_default(),
+        init_holding_default(),
+        zero_owned_reference, // self-consistent with the zero pin, still rejected
+        payer_default(),
+        WLEZ_PROGRAM_ID,
+        nssa_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "token" id
+        NATIVE_PROGRAM_ID,
     );
 }
 

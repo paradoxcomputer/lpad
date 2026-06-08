@@ -605,6 +605,19 @@ impl LaunchpadClient {
         const ATTEMPTS: u32 = 3;
         let mut last = String::new();
         for attempt in 1..=ATTEMPTS {
+            // Idempotency guard against the poll-timed-out-but-landed case: an
+            // earlier re-shield attempt's STARK can actually land on-chain (the
+            // source A is drained) while `poll_tx` times out and reports Err.
+            // Re-submitting would over-draw the now-empty source and panic the
+            // token guest (`Insufficient balance`). Detect the drained source
+            // first and report the no-loss location instead of over-drawing.
+            if self.holding_balance(from_public).unwrap_or(0) < amount {
+                return Err(format!(
+                    "re-shield source account {from_public} is already drained ({amount} no longer present); \
+                     a prior re-shield attempt landed on-chain despite a poll timeout. No funds were lost - \
+                     they are reachable in this wallet (re-run `lpad sync` then `lpad my-balance`). Last error: {last}"
+                ));
+            }
             match self.privacy_token_transfer(
                 PrivacyPreservingAccount::Public(from_public),
                 PrivacyPreservingAccount::PrivateOwned(to_private),
@@ -815,6 +828,45 @@ impl LaunchpadClient {
         )
     }
 
+    /// Guard a WLEZ deployment before committing real LEZ to it: reject a WLEZ
+    /// whose pinned token OR native program is not the canonical one.
+    /// `Initialize` is permissionless and the on-chain guest cannot know either
+    /// canonical image id (programs are addressed by host-computed guest image
+    /// ids), so a front-running attacker could pin a malicious token program
+    /// (owning the WLEZ definition) or a no-op native program (recorded in the
+    /// vault), then mint unbacked WLEZ - draining the native vault via `Unwrap`
+    /// or extracting real assets on the AMM. The on-chain guest only rejects the
+    /// zero/default no-op; the full pin is enforced here, participant-side,
+    /// before any escrow commits (mirrors [`Self::bc_sale_checked`]). This
+    /// downgrades the front-run from a drain to a recoverable DoS.
+    fn wlez_programs_checked(&self, wlez_program: ProgramId) -> Result<()> {
+        // 1. The WLEZ definition must be owned by the canonical token program
+        //    (Wrap/Unwrap trust `definition.program_owner` for the Mint/Burn leg).
+        let def = wlez_core::get_wlez_definition_id(&wlez_program);
+        let acc = self.read_account(def)?;
+        if acc.program_owner != Program::token().id() {
+            return Err(
+                "WLEZ definition is owned by a non-canonical token program (possible unbacked-mint drain); refusing to wrap/unwrap"
+                    .into(),
+            );
+        }
+        // 2. The native program id recorded in the vault (Wrap pins its escrow
+        //    leg to it) must be the canonical authenticated-transfer program; a
+        //    no-op here lets Wrap skip the real escrow and mint unbacked WLEZ.
+        let vault = wlez_core::get_wlez_vault_id(&wlez_program);
+        let vacc = self.read_account(vault)?;
+        let pinned_native = wlez_core::decode_program_id(vacc.data.as_ref()).ok_or(
+            "WLEZ vault is missing its pinned native program id; refusing to wrap/unwrap",
+        )?;
+        if pinned_native != Program::authenticated_transfer_program().id() {
+            return Err(
+                "WLEZ vault pins a non-canonical native program (possible unbacked-mint drain); refusing to wrap/unwrap"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Wrap `amount` native LEZ → WLEZ: lock LEZ from `user_native` (signs) into
     /// the vault, mint WLEZ into `user_holding` (an initialised WLEZ holding).
     pub fn wrap(
@@ -824,6 +876,7 @@ impl LaunchpadClient {
         user_native: AccountId,
         user_holding: AccountId,
     ) -> Result<TxHash> {
+        self.wlez_programs_checked(wlez_program)?;
         let vault = wlez_core::get_wlez_vault_id(&wlez_program);
         let def = wlez_core::get_wlez_definition_id(&wlez_program);
         self.report("wrapping LEZ → WLEZ");
@@ -844,6 +897,7 @@ impl LaunchpadClient {
         user_holding: AccountId,
         user_native: AccountId,
     ) -> Result<TxHash> {
+        self.wlez_programs_checked(wlez_program)?;
         let vault = wlez_core::get_wlez_vault_id(&wlez_program);
         let def = wlez_core::get_wlez_definition_id(&wlez_program);
         self.report("unwrapping WLEZ → LEZ");
@@ -1640,6 +1694,12 @@ impl LaunchpadClient {
         // Privacy #4: fresh single-use account A holdings (never reused).
         let (a_in, _) = self.wallet.create_new_account_public(None);
         let (a_out, _) = self.wallet.create_new_account_public(None);
+        // Durably record the fresh slots BEFORE the deshield funds a_in (mirrors
+        // bc_create_token_sale_private): if tx1 lands but the process dies before
+        // privacy_token_transfer's persist, a_in is still in the wallet store - so
+        // it stays visible in `my-balance` for the documented re-run recovery and
+        // find_next_slot_layered never re-derives it, keeping A single-use.
+        self.persist()?;
 
         // tx1 - DESHIELD the spend asset into the public A holding (privacy proof, no pool).
         self.report(text.deshield_phase);
@@ -1653,6 +1713,22 @@ impl LaunchpadClient {
         // tx2 - the program-specific public leg (drift-free, min_out).
         self.report(op_phase);
         if let Err(e) = build_public(self, a_in, a_out) {
+            // The public leg returned Err, but `poll_tx` can time out *after* the
+            // tx landed on-chain. If so, a_in's deshielded funds were consumed by
+            // the (actually-executed) public leg and the realized output sits in
+            // a_out - rolling back a_in would over-draw an empty account. Detect
+            // the landed-but-reported-failed leg and point the user at a_out.
+            if self.holding_balance(a_in).unwrap_or(0) < amount {
+                let realized = self.holding_balance(a_out).unwrap_or(0);
+                return Err(format!(
+                    "{} was reported failed but the deshielded {} ({amount}) is gone from the ephemeral \
+                     account A {a_in}, so the public leg likely landed on-chain despite the error. The \
+                     realized output ({realized}) is SAFE in the wallet-owned ephemeral account {a_out} \
+                     (visible in `lpad my-balance` after `lpad sync`); re-shield it into your private \
+                     holding to recover. No funds were lost. {} error: {e}",
+                    text.op_failed, text.spend_noun, text.op_capitalized,
+                ));
+            }
             // ROLLBACK: re-shield the deshielded asset back to the user
             // (retry+sync, like the success path) - only claim it reached the
             // private holding if the re-shield actually returned Ok.
