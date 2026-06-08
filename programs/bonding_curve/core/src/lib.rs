@@ -350,6 +350,10 @@ pub fn buy_cost_for_tokens(
     q: u128,
 ) -> u128 {
     assert!(q < virt_token, "requested quantity exceeds virtual token reserve");
+    assert!(
+        fee_bps < FEE_BPS_DENOMINATOR,
+        "fee_bps must be < the basis-point denominator for the inverse-cost query"
+    );
     // c_eff_min = ceil(Vc * q / (Vt - q))  == ceil(k/(Vt-q) - Vc)
     let c_eff_min = ceil_div(
         virt_collateral
