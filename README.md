@@ -11,8 +11,7 @@ same lifecycle.
 
 > ⚠️ **Work in progress.** The on-chain programs, SDK and CLI are implemented and
 > live-tested (unit + e2e, public **and** private buys verified on a real-proof
-> sequencer). Remaining: the Logos mini-app, a durable crash-safe saga journal,
-> external audit, and mainnet. Interfaces may still change. Not yet audited - do not
+> sequencer). Interfaces may still change. Not yet audited - do not
 > use with real funds.
 
 **RFPs:** delivers **[RFP-015 - Bonding Curve](https://github.com/logos-co/rfp)** and
