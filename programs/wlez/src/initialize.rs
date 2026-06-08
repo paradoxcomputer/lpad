@@ -60,6 +60,18 @@ pub fn initialize(
     );
     let token_program_id = expected_token_program_id;
 
+    // SECURITY: `native_program_id` is a caller-supplied argument and Initialize
+    // is permissionless, so a malicious deployer could front-run the bootstrap
+    // and pin a NO-OP "native" program here. Wrap would then trust it (it reads
+    // the stored id from the vault), the escrow `authenticated_transfer` leg
+    // would silently no-op while the WLEZ Mint still ran, and the attacker could
+    // mint unbacked WLEZ. Pin it to the canonical authenticated-transfer program
+    // so only the real native program can ever be recorded in the vault.
+    assert_eq!(
+        native_program_id, wlez_core::NATIVE_PROGRAM_ID,
+        "native_program_id must be the canonical authenticated-transfer program"
+    );
+
     // 2. Idempotency - if the vault is already claimed by this program
     //    AND the definition is already token-program-owned, this call is
     //    a no-op. Lets bootstrap re-run safely.

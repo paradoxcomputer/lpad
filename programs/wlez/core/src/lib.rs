@@ -143,6 +143,18 @@ pub fn get_wlez_init_holding_id(wlez_program_id: &ProgramId) -> AccountId {
     AccountId::for_public_pda(wlez_program_id, &compute_wlez_init_holding_seed())
 }
 
+/// Canonical native/authenticated-transfer program id
+/// (`nssa::program::Program::authenticated_transfer_program().id()` for the
+/// pinned LEZ build). `Initialize` asserts the caller-supplied native program
+/// equals this, so a permissionless/front-run Initialize cannot pin a no-op
+/// "native" program that would let `Wrap` mint unbacked WLEZ (the escrow leg
+/// must route through the real native program). This is a build-stable risc0
+/// image id; it MUST be updated if the LEZ dependency tag is bumped - the wlez
+/// integration test (which uses the live id) fails if it drifts.
+pub const NATIVE_PROGRAM_ID: ProgramId = [
+    2925018885, 3195975231, 1342562368, 1723095779, 2234491521, 2660916999, 2383534388, 2025325575,
+];
+
 /// Default WLEZ token symbol - used in the `token::NewDefinition` call
 /// inside `Initialize`. Kept short so the symbol fits in a UI chip.
 pub const WLEZ_NAME: &str = "WLEZ";

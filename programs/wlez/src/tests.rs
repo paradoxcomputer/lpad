@@ -25,7 +25,8 @@ use wlez_core::{
 
 const WLEZ_PROGRAM_ID: ProgramId = [3u32; 8];
 const TOKEN_PROGRAM_ID: ProgramId = [2u32; 8];
-const NATIVE_PROGRAM_ID: ProgramId = [1u32; 8];
+// Must equal the pinned canonical native id - Initialize now asserts it.
+const NATIVE_PROGRAM_ID: ProgramId = wlez_core::NATIVE_PROGRAM_ID;
 
 fn user_id() -> AccountId {
     AccountId::new([0xAAu8; 32])
@@ -247,6 +248,24 @@ fn initialize_rejects_wrong_vault_id() {
         WLEZ_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
         NATIVE_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "native_program_id must be the canonical")]
+fn initialize_rejects_non_canonical_native_program() {
+    // E1: a permissionless / front-run Initialize that pins a no-op "native"
+    // program must be rejected, so Wrap can never trust an attacker-chosen
+    // native id and mint unbacked WLEZ.
+    let _ = crate::initialize::initialize(
+        vault_default(),
+        definition_default(),
+        init_holding_default(),
+        reference_token_def(),
+        payer_default(),
+        WLEZ_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        [9u32; 8], // attacker's EVIL program id, != the canonical native program
     );
 }
 
