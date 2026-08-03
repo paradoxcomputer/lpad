@@ -12,7 +12,7 @@
 //! Chained call order: native transfer first (user must have the funds
 //! before we mint anything), then mint.
 
-use nssa_core::{
+use lee_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -85,12 +85,18 @@ pub fn wrap(
     ];
 
     // 1) Native transfer: user_native -> vault, amount LEZ.
-    //    `authenticated_transfer_program::transfer` instruction data is
-    //    just the u128 amount (see lez/program_methods/.../authenticated_transfer.rs).
+    //    The authenticated-transfer program takes a typed instruction enum (see
+    //    lez/programs/authenticated_transfer/src/main.rs). Under LEZ v0.2.0-rc4 its
+    //    instruction was a bare `u128` and this call passed `&amount` directly;
+    //    v0.2.1 introduced `authenticated_transfer_core::Instruction`, so the
+    //    amount must be wrapped. `ChainedCall::new` is generic over any
+    //    `Serialize`, so getting this wrong is a silent runtime failure rather
+    //    than a compile error: the callee would read the raw amount as an enum
+    //    discriminant and either mis-decode or abort.
     let call_native = ChainedCall::new(
         native_program_id,
         vec![user_native.clone(), vault.clone()],
-        &amount,
+        &authenticated_transfer_core::Instruction::Transfer { amount },
     );
 
     // 2) Mint: definition (PDA-auth) -> user_holding.

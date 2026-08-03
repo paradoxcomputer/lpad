@@ -168,7 +168,7 @@ mod lifecycle_tests {
     use bonding_curve_core::{
         compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, SaleState, SaleStatus,
     };
-    use nssa_core::{
+    use lee_core::{
         account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
         program::{ChainedCall, ProgramId},
     };
@@ -368,7 +368,7 @@ mod lifecycle_tests {
         creator: AccountWithMetadata,
         coll_balance: u128,
         token_balance: u128,
-    ) -> (Vec<nssa_core::program::AccountPostState>, Vec<ChainedCall>) {
+    ) -> (Vec<lee_core::program::AccountPostState>, Vec<ChainedCall>) {
         withdraw(
             sale_account(state),
             token_vault(token_balance),

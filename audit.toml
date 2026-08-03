@@ -10,7 +10,7 @@
 # RISC Zero build-time toolchain. `cargo tree -i <crate>` confirms NONE are
 # introduced by lpad's own crates (bonding_curve / lbp / sdk / cli), so there is
 # nothing to fix in this repo; remediation belongs to those upstream owners.
-# Re-review this list whenever the LEZ pin (v0.2.0-rc4) is bumped.
+# Re-review this list whenever the LEZ pin (v0.2.1) is bumped.
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071", # rsa 0.9.x Marvin timing sidechannel - via rzup -> risc0-build (build-time tool, not a runtime signing path)

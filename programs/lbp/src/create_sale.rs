@@ -14,7 +14,7 @@ use lbp_core::{
     read_fungible, spot_price_q64, PoolState, SaleStatus, MAX_DURATION_MS, MAX_FEE_BPS,
     MAX_METADATA_LEN, MAX_RESERVE,
 };
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId, DEFAULT_PROGRAM_ID},
 };

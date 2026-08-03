@@ -8,11 +8,11 @@ use lbp_core::{
     allowlist_leaf, buy_tokens_out, close_fee, compute_collateral_vault_pda, compute_pool_pda,
     compute_token_vault_pda, weight_token_q64, Instruction, PoolState, SaleStatus, CLOCK_01,
 };
-use nssa::{
+use lee::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use token_core::TokenHolding;
 
 const RESERVE_TOKEN: u128 = 1_000_000;
@@ -22,14 +22,14 @@ const T_END: u64 = 1_000_000;
 const FEE_BPS: u128 = 500; // 5% at close
 const NONCE: u64 = 0;
 
-fn lbp() -> nssa_core::program::ProgramId {
-    lbp_methods::LBP_ID
+fn lbp() -> lee_core::program::ProgramId {
+    lpad_guests::lbp().id()
 }
-fn token() -> nssa_core::program::ProgramId {
-    token_methods::TOKEN_ID
+fn token() -> lee_core::program::ProgramId {
+    programs::token().id()
 }
-fn ata_prog() -> nssa_core::program::ProgramId {
-    ata_methods::ATA_ID
+fn ata_prog() -> lee_core::program::ProgramId {
+    programs::ata().id()
 }
 fn ata_addr(owner: AccountId, def: AccountId) -> AccountId {
     get_associated_token_account_id(&ata_prog(), &compute_ata_seed(owner, def))
@@ -55,7 +55,12 @@ fn bal(state: &V03State, id: AccountId) -> u128 {
     }
 }
 fn deploy(state: &mut V03State) {
-    for elf in [token_methods::TOKEN_ELF.to_vec(), lbp_methods::LBP_ELF.to_vec()] {
+    // The built-in programs (token, ATA, clock, authenticated_transfer, ...) are
+    // already registered by `testnet_initial_state::initial_state()`, so
+    // re-deploying them now fails with `ProgramAlreadyExists`. Only lpad's own
+    // program needs deploying.
+    {
+        let elf = lpad_guests::lbp().elf().to_vec();
         let msg = program_deployment_transaction::Message::new(elf);
         state
             .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(msg))
@@ -175,7 +180,7 @@ fn expected_tokens_out(collateral_in: u128) -> u128 {
 fn public_buy_moves_tokens_and_collateral() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_pool(&mut state, &i);
 
@@ -222,7 +227,7 @@ fn public_buy_moves_tokens_and_collateral() {
 fn public_buy_rejects_wrong_collateral_token() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_pool(&mut state, &i);
 
@@ -255,13 +260,10 @@ fn public_buy_rejects_wrong_collateral_token() {
 fn buy_ata_routes_collateral_and_tokens_through_atas() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
-    // The ATA path dispatches through the ATA program, so deploy it too.
-    let ata_msg = program_deployment_transaction::Message::new(ata_methods::ATA_ELF.to_vec());
-    state
-        .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(ata_msg))
-        .expect("ata program deployment must succeed");
+    // The ATA path dispatches through the ATA program, which is a built-in and so
+    // is already registered by `initial_state()` - nothing to deploy.
     seed_open_pool(&mut state, &i);
     // LBP seeds the collateral vault at creation with the collateral reserve.
     state.force_insert_account(i.collateral_vault, fungible(i.collateral_def, RESERVE_COLLATERAL));
@@ -321,7 +323,7 @@ fn buy_ata_routes_collateral_and_tokens_through_atas() {
 fn buy_ata_rejects_a_substituted_ata_program() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_pool(&mut state, &i);
     state.force_insert_account(i.collateral_vault, fungible(i.collateral_def, RESERVE_COLLATERAL));
@@ -369,7 +371,7 @@ fn fund_buyer(state: &mut V03State, i: &Ids, buyer_coll: AccountId, buyer_tok: A
 fn gated_buy_admits_an_allowlisted_member() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
 
     let buyer_key = PrivateKey::try_new([60; 32]).unwrap();
@@ -393,7 +395,7 @@ fn gated_buy_admits_an_allowlisted_member() {
 fn gated_buy_rejects_a_non_member() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
 
     // The allowlist commits to a DIFFERENT member; the buyer is not in it.
@@ -417,7 +419,7 @@ fn gated_buy_rejects_a_non_member() {
 fn gated_buy_rejects_a_replayed_foreign_leaf() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
 
     // The real allowlisted member's leaf is the root.
@@ -443,7 +445,7 @@ fn gated_buy_rejects_a_replayed_foreign_leaf() {
 fn gated_buy_reverts_on_open_pool() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_pool(&mut state, &i); // allowlist_root = [0; 32] (open)
 
@@ -469,7 +471,7 @@ fn withdraw_taxes_only_raised_collateral_and_pays_the_creator() {
     let creator_key = PrivateKey::try_new([42; 32]).unwrap();
     let creator = id_of(&creator_key);
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
 
     // A CLOSED pool that raised 10_000 from buyers on top of a 5_000 creator seed.
@@ -530,7 +532,7 @@ fn withdraw_taxes_only_raised_collateral_and_pays_the_creator() {
 fn plain_buy_is_rejected_on_a_gated_pool() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     let member = id_of(&PrivateKey::try_new([99; 32]).unwrap());
     seed_gated_pool(&mut state, &i, allowlist_leaf(&member)); // non-zero allowlist root

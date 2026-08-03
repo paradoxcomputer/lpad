@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
-lbp_core = { path = "core" }
-token_core = { path = "../token/core" }
-ata_core = { path = "../ata/core" }
+# See the note in ../bonding_curve/Cargo.toml on why `host` is not enabled here.
+lee_core = { workspace = true }
+lbp_core = { workspace = true }
+token_core = { workspace = true }
+ata_core = { workspace = true }
+# Used by `dispatch::{clock_ms, clock_block_id}` to decode the Clock account.
+borsh = { workspace = true }

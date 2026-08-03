@@ -1,59 +1,119 @@
+# Workspace root AND the `lpad_guests` package, mirroring upstream's
+# `lez/programs` layout: the package owns one `[[bin]]` per program (the zkVM
+# guest entrypoints) and its library re-exports the built ELFs as `Program`s.
+#
+# Two disjoint feature sets, exactly as upstream:
+#   * `programs` - pulls the program crates in and enables the `[[bin]]` guest
+#     entrypoints. Used by `cargo risczero build` to cross-compile the ELFs.
+#   * `artifacts` - the library target, embedding the already-built ELFs from
+#     `artifacts/lpad/*.bin` and deriving their image ids.
+# They must never be active together: with `artifacts` on, the guest build would
+# try to embed the very `.bin` files it is producing. This is also why
+# `artifacts` is not a default feature (upstream: risc0#3772).
+[package]
+name = "lpad_guests"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lpad_guests"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bonding_curve"
+path = "bonding_curve/src/main.rs"
+required-features = ["programs"]
+
+[[bin]]
+name = "lbp"
+path = "lbp/src/main.rs"
+required-features = ["programs"]
+
+[[bin]]
+name = "wlez"
+path = "wlez/src/main.rs"
+required-features = ["programs"]
+
+[features]
+artifacts = ["dep:lee", "dep:risc0-binfmt"]
+programs = [
+    "dep:lee_core",
+    "dep:risc0-zkvm",
+    "dep:borsh",
+    "dep:bonding_curve_core",
+    "dep:bonding_curve_program",
+    "dep:lbp_core",
+    "dep:lbp_program",
+    "dep:wlez_core",
+    "dep:wlez_program",
+]
+
+[dependencies]
+lee = { workspace = true, optional = true }
+lee_core = { workspace = true, optional = true }
+risc0-zkvm = { workspace = true, optional = true }
+borsh = { workspace = true, optional = true }
+bonding_curve_core = { workspace = true, optional = true }
+bonding_curve_program = { workspace = true, optional = true }
+lbp_core = { workspace = true, optional = true }
+lbp_program = { workspace = true, optional = true }
+wlez_core = { workspace = true, optional = true }
+wlez_program = { workspace = true, optional = true }
+
+[build-dependencies]
+risc0-binfmt = { version = "3.0.2", optional = true }
+
 [workspace]
 members = [
-    # vendored LEZ-ecosystem programs (verbatim from ldex → identical RISC0 image
-    # ids → free interop with the ldex DEX for bonding-curve auto-graduation)
-    "token/core",
-    "token",
-    "token/methods",
-    "ata/core",
-    "ata",
-    "ata/methods",
-    "wlez/core",
-    "wlez",
-    "wlez/methods",
-    # launchpad programs
     "bonding_curve/core",
     "bonding_curve",
-    "bonding_curve/methods",
     "lbp/core",
     "lbp",
-    "lbp/methods",
-    # tooling + tests
+    "wlez/core",
+    "wlez",
     "integration_tests",
-    "tools/idl-gen",
-]
-exclude = [
-    "token/methods/guest",
-    "ata/methods/guest",
-    "wlez/methods/guest",
-    "bonding_curve/methods/guest",
-    "lbp/methods/guest",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
-nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["test-utils"] }
-token_core = { path = "token/core" }
-token_program = { path = "token" }
-ata_core = { path = "ata/core" }
-ata_program = { path = "ata" }
-wlez_core = { path = "wlez/core" }
-wlez_program = { path = "wlez" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+# Upstream LEZ programs as committed reproducible artifacts. `artifacts` is
+# mandatory and deliberately not a default feature upstream, so every consumer
+# must name it explicitly.
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", default-features = false, features = [
+    "artifacts",
+] }
+# Canonical token / ATA / authenticated-transfer core types. lpad used to vendor
+# hardened forks of token and ATA; v0.2.1 ships both as committed artifacts with
+# machine-independent image ids, so the forks are gone and the ATA recipient
+# contract those forks enforced is now re-asserted by lpad's own callers.
+# `ata_core` keeps its short local name via a package rename so call sites are
+# untouched.
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+authenticated_transfer_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+
 bonding_curve_core = { path = "bonding_curve/core" }
 bonding_curve_program = { path = "bonding_curve" }
 lbp_core = { path = "lbp/core" }
 lbp_program = { path = "lbp" }
+wlez_core = { path = "wlez/core" }
+wlez_program = { path = "wlez" }
+
 serde = { version = "1.0", features = ["derive"] }
 borsh = { version = "1.0", features = ["derive"] }
-risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["client"] }
+# Guests need only the bare no_std zkVM runtime, and lpad's host side never
+# proves (the prover lives in the sequencer), so default features stay off.
+# Upstream v0.2.1 does the same - which is why lpad no longer has to patch a
+# local checkout to drop the bonsai/ring dependency that cannot cross-compile
+# to riscv32.
+risc0-zkvm = { version = "=3.0.5", default-features = false }
 serde_json = "1.0"
-tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }
-
-# Override the upstream nssa git dependency with the local checkout (the
-# composite-receipt STARK speedup). Path-relative to the `_lez` symlink that
-# setup.sh creates at the repo root. Both nssa and nssa_core must be patched
-# together to keep the dependency graph consistent.
-[patch."https://github.com/logos-blockchain/logos-execution-zone.git"]
-nssa = { path = "../_lez/nssa" }
-nssa_core = { path = "../_lez/nssa/core" }
+tokio = { version = "1.28.2", features = [
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "macros",
+] }

@@ -9,6 +9,7 @@ pub use lbp_core as core;
 pub mod ata;
 pub mod buy;
 pub mod create_sale;
+pub mod dispatch;
 pub mod lifecycle;
 pub mod util;
 

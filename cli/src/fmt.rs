@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 
 /// Parse an account id from either 64-char hex (optional `0x` prefix) or the
 /// wallet's base58 form (`Public/<b58>`, `Private/<b58>`, or bare `<b58>`).

@@ -10,12 +10,11 @@
 //! host program, the FFI, and the disposable (private) buy path.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
 };
 use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,7 +69,6 @@ const COLLATERAL_VAULT_TAG: &[u8; 16] = b"bc/coll_vault\0\0\0";
 // ---------------------------------------------------------------------------
 
 /// Lifecycle status of a sale.
-#[account_type]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum SaleStatus {
     #[default]
@@ -90,7 +88,6 @@ pub struct SupplyObservation {
 /// Full on-chain state of a bonding-curve sale. Public by design (RFP-015
 /// Privacy Architecture): any participant can verify `tokens_out` against the
 /// formula independently.
-#[account_type]
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct SaleState {
     // ---- identity / config (immutable after creation) ----

@@ -17,7 +17,7 @@ set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-LEZ="${LPAD_LEZ_DIR:-$REPO/_lez}"
+LEZ="${LPAD_LEZ_DIR:-$HOME/lez}"
 WALLET="${LPAD_WALLET_BIN:-$LEZ/target/release/wallet}"
 LPAD="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 PROG="$REPO/programs"
@@ -26,6 +26,9 @@ PW="${LPAD_WALLET_PW:-lpaddev}"
 SEQ_ADDR="${LPAD_SEQUENCER_ADDR:-http://127.0.0.1:3040}"
 OUT="${LPAD_BOOTSTRAP_OUT:-$REPO/scripts/bootstrap.env}"
 GENESIS_FUNDER="Public/2RHZhw9h534Zr3eq2RGhQete2Hh667foECzXPmSkGni2"
+# Key + genesis balance for GENESIS_FUNDER (LEZ Justfile: wallet-import-test-accounts).
+GENESIS_FUNDER_KEY="f434f8741720014586ae43356d2aec6257da086222f604ddb75d69733b86fc4c"
+GENESIS_FUNDER_AMOUNT="${LPAD_GENESIS_FUNDER_AMOUNT:-20000}"
 
 # sale parameters
 D=1000000; R=200000; VT=2000000; VC=50000; FEE_BPS=100; NONCE=0
@@ -40,13 +43,24 @@ SEQ_HOST="${SEQ_HP%%:*}"; SEQ_PORT="${SEQ_HP##*:}"
 timeout 3 bash -c "</dev/tcp/${SEQ_HOST}/${SEQ_PORT}" 2>/dev/null \
   || { echo "sequencer not reachable at $SEQ_ADDR" >&2; exit 1; }
 
-export NSSA_WALLET_HOME_DIR="$HOME_DIR"
+export LEE_WALLET_HOME_DIR="$HOME_DIR"
 mkdir -p "$HOME_DIR"
-cp -f "$LEZ/wallet/configs/debug/wallet_config.json" "$HOME_DIR/wallet_config.json"
+cp -f "$LEZ/lez/wallet/configs/debug/wallet_config.json" "$HOME_DIR/wallet_config.json"
 python3 - "$HOME_DIR/wallet_config.json" "$SEQ_ADDR" <<'PY'
 import json,sys
 p,addr=sys.argv[1],sys.argv[2]
-d=json.load(open(p)); d["sequencer_addr"]=addr; d["seq_poll_timeout"]="2s"
+d=json.load(open(p))
+# v0.2.1 replaced the single `sequencer_addr` with a `sequencers` list, and added
+# a multi-sequencer client config. Keep `calibration_limit` low: on every wallet
+# open the client probes each sequencer that many times (default 100), and the
+# CLI opens a fresh wallet per command.
+d.pop("sequencer_addr", None)
+d.pop("initial_accounts", None)
+d["sequencers"] = [{"sequencer_addr": addr, "basic_auth": None}]
+d["seq_poll_timeout"] = "2s"
+d.setdefault("multi_sequencer_client_config", {})
+d["multi_sequencer_client_config"]["distribution_limit"] = 1
+d["multi_sequencer_client_config"]["calibration_limit"] = 3
 json.dump(d,open(p,"w"),indent=4)
 PY
 # Record the proof mode next to the wallet so `lpad` auto-selects RISC0_DEV_MODE
@@ -65,6 +79,17 @@ PROJ_DEF=$(new_pub);  PROJ_HOLD=$(new_pub)
 COLL_DEF=$(new_pub);  COLL_HOLD=$(new_pub)
 TREASURY=$(new_pub);  BUYER_COLL=$(new_pub); BUYER_TOK=$(new_pub)
 
+# Since v0.2.1 a `supply_account` genesis action credits the recipient's VAULT
+# PDA rather than its own balance, and the wallet config no longer ships the
+# genesis keys. So the funder must be imported and its vault claimed before any
+# transfer - otherwise every send fails with insufficient funds.
+echo ">> importing + claiming the genesis funder vault"
+w account import public --private-key "$GENESIS_FUNDER_KEY" >&2 2>&1 || \
+  echo "   (already imported)" >&2
+w vault claim --account-id "$GENESIS_FUNDER" --amount "$GENESIS_FUNDER_AMOUNT" >&2 2>&1 || \
+  echo "   (vault claim failed - already claimed?)" >&2
+sleep 14
+
 echo ">> funding creator with native LEZ from genesis"
 w auth-transfer send --from "$GENESIS_FUNDER" --to "$CREATOR" --amount 8000 >&2 || \
   echo "   (genesis fund failed)" >&2
@@ -79,8 +104,8 @@ w token new --name COLLAT --total-supply "$COLL_SUPPLY" \
 sleep 14
 
 echo ">> deploying bonding_curve program (own block)"
-BC_BIN="$PROG/target/riscv-guest/bonding_curve-methods/bonding_curve-guest/riscv32im-risc0-zkvm-elf/release/bonding_curve.bin"
-[ -f "$BC_BIN" ] || { echo "missing $BC_BIN (build: cargo build -p bonding_curve-methods)" >&2; exit 1; }
+BC_BIN="$PROG/artifacts/lpad/bonding_curve.bin"
+[ -f "$BC_BIN" ] || { echo "missing $BC_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
 w deploy-program "$BC_BIN" >&2 2>&1 || true
 sleep 20
 BC_ID=$(lpad program-id bc --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
@@ -114,24 +139,25 @@ echo "   sale id = $SALE_ID"
 
 # --- LBP (RFP-016): deploy the program + create a time-driven sale ---------
 echo ">> deploying lbp program (own block)"
-LBP_BIN="$PROG/target/riscv-guest/lbp-methods/lbp-guest/riscv32im-risc0-zkvm-elf/release/lbp.bin"
-[ -f "$LBP_BIN" ] || { echo "missing $LBP_BIN (build: cargo build -p lbp-methods)" >&2; exit 1; }
+LBP_BIN="$PROG/artifacts/lpad/lbp.bin"
+[ -f "$LBP_BIN" ] || { echo "missing $LBP_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
 w deploy-program "$LBP_BIN" >&2 2>&1 || true
 sleep 20
 LBP_ID=$(lpad program-id lbp --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
 
 # --- wlez (native-LEZ collateral): deploy so `wrap`/`create-token-sale` work ---
 echo ">> deploying wlez program (own block)"
-WLEZ_BIN="$PROG/target/riscv-guest/wlez-methods/wlez-guest/riscv32im-risc0-zkvm-elf/release/wlez.bin"
+WLEZ_BIN="$PROG/artifacts/lpad/wlez.bin"
 [ -f "$WLEZ_BIN" ] && { w deploy-program "$WLEZ_BIN" >&2 2>&1 || true; sleep 20; echo "   wlez deployed"; } \
-  || echo "   (wlez.bin missing - skip; build: cargo build -p wlez-methods)"
+  || echo "   (wlez.bin missing - skip; build: bash scripts/build-guests.sh)"
 
-# --- ata (Associated Token Accounts): deploy so `create-ata`/`buy-ata`/`sell-ata` work ---
-echo ">> deploying ata program (own block)"
-ATA_BIN="$PROG/target/riscv-guest/ata-methods/ata-guest/riscv32im-risc0-zkvm-elf/release/ata.bin"
-[ -f "$ATA_BIN" ] && { w deploy-program "$ATA_BIN" >&2 2>&1 || true; sleep 20; echo "   ata deployed"; } \
-  || echo "   (ata.bin missing - skip; build: cargo build -p ata-methods)"
+# --- ata (Associated Token Accounts) -----------------------------------------
+# Nothing to deploy: lpad used to ship a hardened fork of the ATA program, but
+# v0.2.1 pre-deploys the canonical one at genesis (see
+# testnet_initial_state::initial_programs), so its id is already live and is a
+# compile-time constant on our side.
 ATA_ID=$(lpad program-id ata --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
+echo ">> ata program (canonical, pre-deployed at genesis)"
 echo "   ata program id = $ATA_ID"
 echo "   lbp program id = $LBP_ID"
 
@@ -157,7 +183,7 @@ echo "   lbp pool id = $LBP_POOL_ID"
 
 {
   echo "# LPAD bootstrap output ($(date -u +%FT%TZ))"
-  echo "export NSSA_WALLET_HOME_DIR=\"$HOME_DIR\""
+  echo "export LEE_WALLET_HOME_DIR=\"$HOME_DIR\""
   echo "export LPAD_WALLET_CONFIG=\"$HOME_DIR/wallet_config.json\""
   echo "export LPAD_WALLET_STORAGE=\"$HOME_DIR/storage.json\""
   echo "export LPAD_SEQUENCER_ADDR=\"$SEQ_ADDR\""

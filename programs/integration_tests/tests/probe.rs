@@ -1,12 +1,11 @@
 //! Probe: learn harness behaviour (is CLOCK_01 seeded at genesis? what is a
 //! fresh account's default?). Informs the clock handling in real tests.
 
-use nssa::V03State;
-use nssa_core::account::Account;
+use lee_core::account::Account;
 
 #[test]
 fn probe_clock_and_defaults() {
-    let state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let state = testnet_initial_state::initial_state();
     let clock = state.get_account_by_id(bonding_curve_core::CLOCK_01);
     println!(
         "CLOCK_01: owner={:?} data_len={} is_default={}",
@@ -21,6 +20,6 @@ fn probe_clock_and_defaults() {
         let ts = i64::from_le_bytes(d[8..16].try_into().unwrap());
         println!("CLOCK_01 decoded: block_id={block_id} timestamp={ts}");
     }
-    println!("bonding_curve program id = {:?}", bonding_curve_methods::BONDING_CURVE_ID);
-    println!("token program id = {:?}", token_methods::TOKEN_ID);
+    println!("bonding_curve program id = {:?}", lpad_guests::bonding_curve().id());
+    println!("token program id = {:?}", programs::token().id());
 }

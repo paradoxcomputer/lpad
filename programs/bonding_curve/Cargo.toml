@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
-bonding_curve_core = { path = "core" }
-token_core = { path = "../token/core" }
-ata_core = { path = "../ata/core" }
+# No `host` feature: this crate is compiled into the riscv32 guest, and
+# lee_core's `host` only adds `ml-kem/getrandom`, which has no zkVM target
+# implementation. Host-side consumers (integration_tests, sdk) enable it
+# themselves and cargo unifies it for host builds.
+lee_core = { workspace = true }
+bonding_curve_core = { workspace = true }
+token_core = { workspace = true }
+ata_core = { workspace = true }
+# Used by `dispatch::clock_ms` to decode the Clock account data.
+borsh = { workspace = true }

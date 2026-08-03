@@ -10,12 +10,11 @@
 pub mod fixed;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nssa_core::{
+use lee_core::{
     account::{AccountId, AccountWithMetadata, Data},
     program::{PdaSeed, ProgramId},
 };
 use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
 
 use fixed::{div_q64, div_to_q64, mul_shr_64, mul_shr_64_checked, pow_q64, ONE};
 
@@ -80,7 +79,6 @@ pub fn clock_ms(data: &Data) -> i64 {
 // State
 // ---------------------------------------------------------------------------
 
-#[account_type]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum SaleStatus {
     #[default]
@@ -94,7 +92,6 @@ pub struct PriceObservation {
     pub price_q64: u128,
 }
 
-#[account_type]
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PoolState {
     // ---- identity / config ----

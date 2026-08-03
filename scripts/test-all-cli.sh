@@ -4,7 +4,7 @@
 # emitting the env file below. Run: bash scripts/test-all-cli.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.rc4.env}"
+ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.v021.env}"
 # shellcheck disable=SC1090
 source "$ENVFILE"
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"

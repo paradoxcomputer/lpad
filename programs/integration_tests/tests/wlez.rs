@@ -13,30 +13,29 @@
 //! that broke any of those would still pass the unit tests but is caught here.
 //!
 //! The native (`authenticated_transfer`) program is registered automatically by
-//! `V03State::new_with_genesis_accounts`; native accounts carry its program id as
+//! `testnet_initial_state::initial_state`; native accounts carry its program id as
 //! their owner. Run with `RISC0_DEV_MODE=1`.
 
-use nssa::program::Program;
-use nssa::{
+use lee::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
-use nssa_core::program::ProgramId;
+use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::program::ProgramId;
 use token_core::{TokenDefinition, TokenHolding};
 use wlez_core::{
     get_wlez_definition_id, get_wlez_init_holding_id, get_wlez_vault_id, Instruction, WLEZ_NAME,
 };
 
 fn token() -> ProgramId {
-    token_methods::TOKEN_ID
+    programs::token().id()
 }
 fn wlez() -> ProgramId {
-    wlez_methods::WLEZ_ID
+    lpad_guests::wlez().id()
 }
 /// The native-LEZ (`authenticated_transfer`) program, registered at genesis.
 fn native() -> ProgramId {
-    Program::authenticated_transfer_program().id()
+    programs::authenticated_transfer().id()
 }
 fn id_of(key: &PrivateKey) -> AccountId {
     AccountId::from(&PublicKey::new_from_private_key(key))
@@ -94,7 +93,12 @@ fn total_supply(state: &V03State, def: AccountId) -> u128 {
 }
 
 fn deploy(state: &mut V03State) {
-    for elf in [token_methods::TOKEN_ELF.to_vec(), wlez_methods::WLEZ_ELF.to_vec()] {
+    // The built-in programs (token, ATA, clock, authenticated_transfer, ...) are
+    // already registered by `testnet_initial_state::initial_state()`, so
+    // re-deploying them now fails with `ProgramAlreadyExists`. Only lpad's own
+    // program needs deploying.
+    {
+        let elf = lpad_guests::wlez().elf().to_vec();
         let msg = program_deployment_transaction::Message::new(elf);
         state
             .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(msg))
@@ -144,7 +148,7 @@ fn deploy_and_initialize(state: &mut V03State, payer_key: &PrivateKey) {
 #[test]
 fn wlez_wrap_locks_native_and_mints_wlez() {
     let payer_key = PrivateKey::try_new([10; 32]).unwrap();
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy_and_initialize(&mut state, &payer_key);
 
     let vault = get_wlez_vault_id(&wlez());
@@ -183,7 +187,7 @@ fn wlez_wrap_locks_native_and_mints_wlez() {
 #[test]
 fn wlez_unwrap_burns_wlez_and_releases_native() {
     let payer_key = PrivateKey::try_new([11; 32]).unwrap();
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy_and_initialize(&mut state, &payer_key);
 
     let vault = get_wlez_vault_id(&wlez());
@@ -243,7 +247,7 @@ fn wlez_unwrap_burns_wlez_and_releases_native() {
 #[test]
 fn wlez_unwrap_above_vault_balance_reverts() {
     let payer_key = PrivateKey::try_new([12; 32]).unwrap();
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy_and_initialize(&mut state, &payer_key);
 
     let vault = get_wlez_vault_id(&wlez());
@@ -292,7 +296,7 @@ fn wlez_unwrap_above_vault_balance_reverts() {
 #[test]
 fn wlez_wrap_with_foreign_holding_definition_reverts() {
     let payer_key = PrivateKey::try_new([13; 32]).unwrap();
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy_and_initialize(&mut state, &payer_key);
 
     let vault = get_wlez_vault_id(&wlez());

@@ -4,7 +4,7 @@ use bonding_curve_core::{
     compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, read_fungible, SaleState,
     SaleStatus,
 };
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };

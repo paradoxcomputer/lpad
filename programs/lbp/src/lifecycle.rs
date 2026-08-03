@@ -4,7 +4,7 @@ use lbp_core::{
     close_fee, compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, read_fungible,
     PoolState, SaleStatus,
 };
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };

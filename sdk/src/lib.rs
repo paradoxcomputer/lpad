@@ -8,17 +8,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use common::transaction::NSSATransaction;
-use nssa::{
+use common::transaction::LeeTransaction;
+use lee::{
     privacy_preserving_transaction::circuit::ProgramWithDependencies,
     program::Program,
     public_transaction::{Message, WitnessSet},
     AccountId, PublicTransaction,
 };
-use nssa_core::{account::Account, program::ProgramId};
+use lee_core::{account::Account, program::ProgramId};
 use sequencer_service_rpc::RpcClient as _;
 use serde::Serialize;
-use wallet::{AccDecodeData, PrivacyPreservingAccount, WalletCore};
+use wallet::{AccDecodeData, AccountIdentity, WalletCore};
 
 pub use bonding_curve_core::{SaleState, SaleStatus as BcStatus};
 pub use lbp_core::{PoolState, SaleStatus as LbpStatus};
@@ -128,15 +128,6 @@ fn parse_name_symbol(uri: &str) -> Option<(String, String)> {
     let field = |k: &str| value.get(k)?.as_str().map(str::to_owned);
     Some((field("name")?, field("symbol")?))
 }
-
-/// Guest ELF locations (relative to `programs/target/riscv-guest/`), overridable
-/// via `$LPAD_BC_ELF` / `$LPAD_LBP_ELF`. Needed only by the private path (the
-/// circuit re-executes the program in-proof).
-const BC_GUEST_REL: &str =
-    "bonding_curve-methods/bonding_curve-guest/riscv32im-risc0-zkvm-elf/release/bonding_curve.bin";
-const LBP_GUEST_REL: &str = "lbp-methods/lbp-guest/riscv32im-risc0-zkvm-elf/release/lbp.bin";
-const WLEZ_GUEST_REL: &str = "wlez-methods/wlez-guest/riscv32im-risc0-zkvm-elf/release/wlez.bin";
-const ATA_GUEST_REL: &str = "ata-methods/ata-guest/riscv32im-risc0-zkvm-elf/release/ata.bin";
 
 /// Nonce range scanned when deriving the wallet's own sales/pools for discovery
 /// (`my_sales`/`my_pools`). Full open enumeration needs the LP-0012 indexer.
@@ -267,30 +258,35 @@ pub fn lbp_allowlist_leaf(collateral_holding: AccountId) -> [u8; 32] {
     lbp_core::allowlist_leaf(&collateral_holding)
 }
 
-/// Derive a program's deployed id (RISC0 image id) from its guest ELF.
+/// A program's deployed id (RISC0 image id).
+///
+/// These are compile-time constants derived from the committed guest ELFs
+/// (`programs/artifacts/lpad/*.bin` for lpad's own programs, and upstream's
+/// `artifacts/lez/programs/*.bin` for the ATA program), so they are identical on
+/// every machine.
+///
+/// Until LEZ v0.2.1 the ELFs were built in-process by `risc0-build` and read off
+/// disk at run time, which made ids toolchain-dependent and let the CLI submit
+/// against a stale id after any guest rebuild. v0.2.1 builds them reproducibly in
+/// a pinned container and commits the result, so that whole class of drift is
+/// gone.
+///
+/// The `Result` is vestigial - these cannot fail - but is kept so the ~30 call
+/// sites in the SDK and CLI are unaffected.
 pub fn bc_program_id() -> Result<ProgramId> {
-    Ok(load_guest("LPAD_BC_ELF", BC_GUEST_REL)?.id())
+    Ok(lpad_guests::bonding_curve().id())
 }
 pub fn lbp_program_id() -> Result<ProgramId> {
-    Ok(load_guest("LPAD_LBP_ELF", LBP_GUEST_REL)?.id())
+    Ok(lpad_guests::lbp().id())
 }
 pub fn wlez_program_id() -> Result<ProgramId> {
-    Ok(load_guest("LPAD_WLEZ_ELF", WLEZ_GUEST_REL)?.id())
+    Ok(lpad_guests::wlez().id())
 }
+/// The canonical upstream ATA program. lpad used to deploy its own hardened fork;
+/// the recipient contract that fork enforced is now re-asserted by the launchpad
+/// programs themselves (`util::assert_ata_recipient`).
 pub fn ata_program_id() -> Result<ProgramId> {
-    Ok(load_guest("LPAD_ATA_ELF", ATA_GUEST_REL)?.id())
-}
-
-fn load_guest(env_key: &str, rel: &str) -> Result<Program> {
-    let path = if let Ok(p) = std::env::var(env_key) {
-        PathBuf::from(p)
-    } else if let Ok(repo) = std::env::var("LPAD_REPO") {
-        PathBuf::from(repo).join("programs/target/riscv-guest").join(rel)
-    } else {
-        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../programs/target/riscv-guest")).join(rel)
-    };
-    let bytes = std::fs::read(&path).map_err(|e| format!("read guest ELF {}: {e}", path.display()))?;
-    Program::new(bytes).map_err(|e| format!("load program bytecode: {e:?}"))
+    Ok(programs::ata().id())
 }
 
 // ---------------------------------------------------------------------------
@@ -347,15 +343,39 @@ pub struct LaunchpadClient {
 }
 
 impl LaunchpadClient {
-    /// Open the LEZ wallet (config + storage) and connect to its sequencer.
-    pub fn open(config: PathBuf, storage: PathBuf) -> Result<Self> {
+    /// Open the LEZ wallet (config + storage + statistics) and connect to its
+    /// sequencer.
+    ///
+    /// `statistics` is new in LEZ v0.2.1: the wallet now keeps per-sequencer
+    /// latency samples there and calibrates any sequencer missing from the file
+    /// on open. See [`Self::record_sequencer_statistics`] - without persisting it,
+    /// every process pays the calibration round-trips again.
+    pub fn open(config: PathBuf, storage: PathBuf, statistics: PathBuf) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("tokio runtime: {e}"))?;
-        let wallet = WalletCore::new_update_chain(config, storage, None)
+        // v0.2.1 made this async (it may calibrate sequencers on open).
+        let wallet = rt
+            .block_on(WalletCore::new_update_chain(config, storage, statistics, None))
             .map_err(|e| format!("open wallet: {e}"))?;
         Ok(Self { wallet, rt, progress: None })
+    }
+
+    /// Persist the sequencer latency statistics gathered during this session.
+    ///
+    /// On open, LEZ v0.2.1 calibrates every configured sequencer that is absent
+    /// from `statistics.json` by issuing `calibration_limit` (default 100)
+    /// sequential `getLastBlockId` requests. Because the CLI opens a fresh wallet
+    /// per command, skipping this would make every single invocation pay those
+    /// round-trips before doing any work. Call it once after a successful
+    /// command - this is what the upstream wallet CLI does.
+    pub fn record_sequencer_statistics(&mut self) -> Result<()> {
+        let rt = &self.rt;
+        let wallet = &mut self.wallet;
+        let _silence = gag::Gag::stdout().ok();
+        rt.block_on(async { wallet.client_rotation().await })
+            .map_err(|e| format!("record sequencer statistics: {e}"))
     }
 
     /// Register a progress sink. The SDK calls it with a short phase label
@@ -379,15 +399,17 @@ impl LaunchpadClient {
 
     /// Current sequencer block height.
     pub fn block_height(&self) -> Result<u64> {
+        // v0.2.1 replaced the public `sequencer_client` field with methods on
+        // WalletCore that route through its multi-sequencer client.
         self.rt
-            .block_on(async { self.wallet.sequencer_client.get_last_block_id().await })
+            .block_on(async { self.wallet.get_last_block_id().await })
             .map_err(|e| format!("get block height: {e}"))
     }
 
     /// The wallet's last-synced block (for the private commitment view).
     #[must_use]
     pub fn last_synced(&self) -> u64 {
-        self.wallet.last_synced_block
+        self.wallet.storage().last_synced_block()
     }
 
     /// Bring the wallet's private (shielded) note view up to chain head.
@@ -399,12 +421,15 @@ impl LaunchpadClient {
     /// sequencer rejects as `InvalidInput("Commitment already seen")`. Every
     /// private entry point syncs first so each spend/output is fresh.
     pub fn sync_private(&mut self) -> Result<()> {
-        let head = self.block_height()?;
         let rt = &self.rt;
         let wallet = &mut self.wallet;
-        // sync_to_block streams "Syncing to block N" to stdout; keep ours clean.
+        // v0.2.1's sync_to_block prints per-block progress AND persists (which
+        // prints again) on every block, so the gag matters more than it did on
+        // rc4. `sync_to_latest_block` folds the old block_height + sync_to_block
+        // pair into one call.
         let _silence = gag::Gag::stdout().ok();
-        rt.block_on(async { wallet.sync_to_block(head).await })
+        rt.block_on(async { wallet.sync_to_latest_block().await })
+            .map(|_head| ())
             .map_err(|e| format!("sync private view: {e}"))
     }
 
@@ -420,10 +445,10 @@ impl LaunchpadClient {
         self.rt.block_on(async {
             let nonces = self
                 .wallet
-                .get_accounts_nonces(signers.to_vec())
+                .get_accounts_nonces(signers)
                 .await
                 .map_err(|e| format!("fetch nonces: {e}"))?;
-            let mut keys: Vec<&nssa::PrivateKey> = Vec::with_capacity(signers.len());
+            let mut keys: Vec<&lee::PrivateKey> = Vec::with_capacity(signers.len());
             for s in signers {
                 keys.push(
                     self.wallet
@@ -435,15 +460,20 @@ impl LaunchpadClient {
                 .map_err(|e| format!("build message: {e}"))?;
             let witness = WitnessSet::for_message(&message, &keys);
             self.report("submitting transaction");
+            // `helm_owned()` replaces the removed public `sequencer_client` field;
+            // it returns the leading sequencer, the same destination the wallet's
+            // own metered send would pick at the default distribution limit.
             let hash = self
                 .wallet
-                .sequencer_client
-                .send_transaction(NSSATransaction::Public(PublicTransaction::new(message, witness)))
+                .helm_owned()
+                .send_transaction(LeeTransaction::Public(PublicTransaction::new(message, witness)))
                 .await
                 .map_err(|e| format!("submit: {e}"))?;
             self.report("waiting for inclusion");
+            // Renamed from `poll_native_token_transfer`, and now also returns the
+            // block the tx landed in.
             self.wallet
-                .poll_native_token_transfer(hash)
+                .poll_transaction(hash)
                 .await
                 .map_err(|e| format!("tx rejected / not included: {e}"))?;
             Ok(to_hash(hash))
@@ -619,8 +649,8 @@ impl LaunchpadClient {
                 ));
             }
             match self.privacy_token_transfer(
-                PrivacyPreservingAccount::Public(from_public),
-                PrivacyPreservingAccount::PrivateOwned(to_private),
+                AccountIdentity::Public(from_public),
+                AccountIdentity::PrivateOwned(to_private),
                 to_private,
                 amount,
             ) {
@@ -666,7 +696,9 @@ impl LaunchpadClient {
                 self.read_account(id).ok()
             };
             let Some(acc) = acc else { continue };
-            let label = self.wallet.storage().labels.get(&id.to_string()).map(ToString::to_string);
+            // v0.2.1 inverted the label map (it is keyed by label now, not by
+            // account id) and made it private, so look labels up by account.
+            let label = self.wallet_label(id, private);
             // Native LEZ lives in the account balance (public accounts only; there
             // is no shielded-native note).
             if !private && acc.balance > 0 {
@@ -698,21 +730,45 @@ impl LaunchpadClient {
             .map(|h| h.account)
     }
 
+    /// The wallet's own label for an account, if any.
+    fn wallet_label(&self, id: AccountId, private: bool) -> Option<String> {
+        let tagged = if private {
+            wallet::account::AccountIdWithPrivacy::Private(id)
+        } else {
+            wallet::account::AccountIdWithPrivacy::Public(id)
+        };
+        self.wallet
+            .storage()
+            .labels_for_account(tagged)
+            .next()
+            .map(ToString::to_string)
+    }
+
+    /// Both imported accounts and those derived from the key tree.
+    ///
+    /// v0.2.1 replaced the public `WalletChainStore { user_data, .. }` with a
+    /// private `Storage` behind accessors, so this reads the key chain instead of
+    /// unioning two maps by hand.
     fn wallet_public_accounts(&self) -> Vec<AccountId> {
-        let ud = &self.wallet.storage().user_data;
-        ud.default_pub_account_signing_keys
-            .keys()
-            .chain(ud.public_key_tree.account_id_map.keys())
-            .copied()
+        self.wallet
+            .storage()
+            .key_chain()
+            .public_account_ids()
+            .map(|(id, _chain_index)| id)
             .collect()
     }
 
+    /// As [`Self::wallet_public_accounts`], for the shielded side.
+    ///
+    /// Note this is a superset of the rc4 behaviour: it also yields shared
+    /// (group-managed) private account ids. That is harmless here because
+    /// `get_account_private` returns `None` for them, so `my_holdings` skips them.
     fn wallet_private_accounts(&self) -> Vec<AccountId> {
-        let ud = &self.wallet.storage().user_data;
-        ud.default_user_private_accounts
-            .keys()
-            .chain(ud.private_key_tree.account_id_map.keys())
-            .copied()
+        self.wallet
+            .storage()
+            .key_chain()
+            .private_account_ids()
+            .map(|(id, _chain_index)| id)
             .collect()
     }
 
@@ -818,12 +874,12 @@ impl LaunchpadClient {
                 // Pin the canonical token program so a malicious reference
                 // definition can't redirect the WLEZ definition's owning
                 // program at bootstrap.
-                token_program_id: Program::token().id(),
+                token_program_id: programs::token().id(),
                 // Pin the canonical native/authenticated-transfer program so
                 // every later Wrap escrows through the real native program
                 // (Wrap checks user_native against this stored id, preventing
                 // an unbacked-WLEZ mint via a no-op native program).
-                native_program_id: Program::authenticated_transfer_program().id(),
+                native_program_id: programs::authenticated_transfer().id(),
             },
         )
     }
@@ -844,7 +900,7 @@ impl LaunchpadClient {
         //    (Wrap/Unwrap trust `definition.program_owner` for the Mint/Burn leg).
         let def = wlez_core::get_wlez_definition_id(&wlez_program);
         let acc = self.read_account(def)?;
-        if acc.program_owner != Program::token().id() {
+        if acc.program_owner != programs::token().id() {
             return Err(
                 "WLEZ definition is owned by a non-canonical token program (possible unbacked-mint drain); refusing to wrap/unwrap"
                     .into(),
@@ -858,7 +914,7 @@ impl LaunchpadClient {
         let pinned_native = wlez_core::decode_program_id(vacc.data.as_ref()).ok_or(
             "WLEZ vault is missing its pinned native program id; refusing to wrap/unwrap",
         )?;
-        if pinned_native != Program::authenticated_transfer_program().id() {
+        if pinned_native != programs::authenticated_transfer().id() {
             return Err(
                 "WLEZ vault pins a non-canonical native program (possible unbacked-mint drain); refusing to wrap/unwrap"
                     .into(),
@@ -949,7 +1005,10 @@ impl LaunchpadClient {
             ata_program,
             vec![owner, definition, ata],
             &[owner],
-            ata_core::Instruction::Create,
+            // v0.2.1 made every ata_core instruction carry the ATA program id.
+            ata_core::Instruction::Create {
+                ata_program_id: ata_program,
+            },
         )?;
         Ok(ata)
     }
@@ -970,7 +1029,7 @@ impl LaunchpadClient {
         // source keypair holding pays into it with a plain token::Transfer.
         self.report("funding associated token account");
         self.submit_public(
-            Program::token().id(),
+            programs::token().id(),
             vec![from_holding, ata],
             &[from_holding],
             token_core::Instruction::Transfer { amount_to_transfer: amount },
@@ -1100,8 +1159,8 @@ impl LaunchpadClient {
     pub fn shield(&mut self, public_holding: AccountId, private_holding: AccountId, amount: u128) -> Result<TxHash> {
         self.sync_private()?;
         self.privacy_token_transfer(
-            PrivacyPreservingAccount::Public(public_holding),
-            PrivacyPreservingAccount::PrivateOwned(private_holding),
+            AccountIdentity::Public(public_holding),
+            AccountIdentity::PrivateOwned(private_holding),
             private_holding,
             amount,
         )
@@ -1111,8 +1170,8 @@ impl LaunchpadClient {
     pub fn deshield(&mut self, private_holding: AccountId, public_holding: AccountId, amount: u128) -> Result<TxHash> {
         self.sync_private()?;
         self.privacy_token_transfer(
-            PrivacyPreservingAccount::PrivateOwned(private_holding),
-            PrivacyPreservingAccount::Public(public_holding),
+            AccountIdentity::PrivateOwned(private_holding),
+            AccountIdentity::Public(public_holding),
             public_holding,
             amount,
         )
@@ -1124,9 +1183,11 @@ impl LaunchpadClient {
     /// freshly-created public accounts survive across CLI processes; otherwise a
     /// later process re-derives the same ids and collides ("already initialized").
     fn persist(&mut self) -> Result<()> {
-        let rt = &self.rt;
-        let wallet = &mut self.wallet;
-        rt.block_on(async { wallet.store_persistent_data().await })
+        // No longer async in v0.2.1, so no runtime needed. It prints to stdout,
+        // which must not corrupt `--json` output.
+        let _silence = gag::Gag::stdout().ok();
+        self.wallet
+            .store_persistent_data()
             .map_err(|e| format!("persist wallet: {e}"))
     }
 
@@ -1135,7 +1196,7 @@ impl LaunchpadClient {
         let (holding, _) = self.wallet.create_new_account_public(None);
         self.persist()?;
         self.submit_public(
-            Program::token().id(),
+            programs::token().id(),
             vec![definition, holding],
             &[holding],
             token_core::Instruction::InitializeAccount,
@@ -1160,7 +1221,7 @@ impl LaunchpadClient {
         let uri = format!("data:application/json,{body}");
         self.report("minting token + metadata");
         self.submit_public(
-            Program::token().id(),
+            programs::token().id(),
             vec![definition, holding, metadata],
             &[definition, holding, metadata],
             token_core::Instruction::NewDefinitionWithMetadata {
@@ -1704,8 +1765,8 @@ impl LaunchpadClient {
         // tx1 - DESHIELD the spend asset into the public A holding (privacy proof, no pool).
         self.report(text.deshield_phase);
         self.privacy_token_transfer(
-            PrivacyPreservingAccount::PrivateOwned(spend_src),
-            PrivacyPreservingAccount::Public(a_in),
+            AccountIdentity::PrivateOwned(spend_src),
+            AccountIdentity::Public(a_in),
             spend_src,
             amount,
         )?;
@@ -1769,8 +1830,8 @@ impl LaunchpadClient {
     /// reads are fresh. The deshield/re-shield legs of `AtomicDisposable`.
     fn privacy_token_transfer(
         &mut self,
-        from: PrivacyPreservingAccount,
-        to: PrivacyPreservingAccount,
+        from: AccountIdentity,
+        to: AccountIdentity,
         decode_into: AccountId,
         amount: u128,
     ) -> Result<TxHash> {
@@ -1778,21 +1839,28 @@ impl LaunchpadClient {
             amount_to_transfer: amount,
         })
         .map_err(|e| format!("serialize transfer: {e:?}"))?;
-        let token_prog = ProgramWithDependencies::new(Program::token(), HashMap::new());
+        let token_prog = ProgramWithDependencies::new(programs::token(), HashMap::new());
         let rt = &self.rt;
         let wallet = &mut self.wallet;
+        // The wallet prints the decoded account and the persist path to stdout.
+        let _silence = gag::Gag::stdout().ok();
         rt.block_on(async move {
             let (hash, secrets) = wallet
                 .send_privacy_preserving_tx(vec![from, to], data, &token_prog)
                 .await
                 .map_err(|e| format!("privacy transfer failed: {e:?}"))?;
-            let tx = wallet
-                .poll_native_token_transfer(hash)
+            // Renamed from `poll_native_token_transfer`; now returns the block too.
+            let (tx, _block_id) = wallet
+                .poll_transaction(hash)
                 .await
                 .map_err(|e| format!("tx not included: {e}"))?;
-            if let NSSATransaction::PrivacyPreserving(ppt) = tx
+            if let LeeTransaction::PrivacyPreserving(ppt) = tx
                 && let Some(secret) = secrets.into_iter().next()
             {
+                // Keep this mask at exactly one entry. v0.2.1 no longer treats the
+                // mask index as the note index - it locates the note by nullifier -
+                // which is what makes a 1-entry mask correct even though the circuit
+                // now pads the private inputs up to 7 notes.
                 wallet
                     .decode_insert_privacy_preserving_transaction_results(
                         &ppt,
@@ -1801,7 +1869,6 @@ impl LaunchpadClient {
                     .map_err(|e| format!("decode results: {e:?}"))?;
                 wallet
                     .store_persistent_data()
-                    .await
                     .map_err(|e| format!("persist wallet: {e}"))?;
             }
             Ok(to_hash(hash))

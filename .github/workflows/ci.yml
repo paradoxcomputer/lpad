@@ -7,17 +7,51 @@ on:
 
 # Public, GitHub-hosted gate: builds + runs the pure pricing-math core crates
 # (host-only - no zkVM guests, no risc0 toolchain, no sequencer). The full
-# unit + IDL-drift + standalone/real-proof E2E runs on a self-hosted `lez`
-# runner via .github/workflows/e2e.yml.
+# unit + standalone/real-proof E2E runs on a self-hosted `lez` runner via
+# .github/workflows/e2e.yml.
+#
+# No LEZ checkout step: since the v0.2.1 upgrade every crate depends on the
+# published git tag rather than a local path-patch, so there is nothing to clone.
 jobs:
   core-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: clone the LEZ at the pinned tag (satisfies the `_lez` path-patch)
-        run: git clone --depth 1 --branch v0.2.0-rc4 https://github.com/logos-blockchain/logos-execution-zone.git _lez
       - uses: dtolnay/rust-toolchain@stable
+      - name: cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            programs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('programs/Cargo.lock') }}
       - name: core pricing-math unit + property tests
         working-directory: programs
         run: cargo test -p bonding_curve_core -p lbp_core
+
+  # The launchpad programs' own host logic. Kept separate from the pure-math job
+  # because it pulls the LEZ state-machine crates, which is a much heavier build.
+  program-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            programs/target
+          key: ${{ runner.os }}-cargo-prog-${{ hashFiles('programs/Cargo.lock') }}
+      - name: program host-logic unit tests
+        working-directory: programs
+        # RISC0_SKIP_BUILD keeps this from trying to cross-compile guests; the
+        # committed artifacts are only needed by the integration tests, which run
+        # on the self-hosted runner.
+        env:
+          RISC0_SKIP_BUILD: 1
+        run: cargo test -p bonding_curve_program -p lbp_program -p wlez_program

@@ -16,20 +16,21 @@
 //!
 //! The keypair-side paths (`buy::buy`, `sell::sell`) stay intact; this only adds
 //! an ATA-routed variant. Both vaults are pre-seeded at `CreateSale`, so the
-//! `ata::Transfer` collateral leg (which rejects a default recipient) works on
-//! the first buy.
+//! `ata::Transfer` legs always have an initialized recipient - which
+//! [`crate::util::assert_ata_recipient`] requires, since the canonical upstream
+//! ATA program would otherwise auto-create a default one.
 
 use bonding_curve_core::{
     compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, read_fungible, SaleState,
 };
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 use crate::buy::{apply_buy, check_accounts};
 use crate::sell::{apply_sell, sell_collateral_payout};
-use crate::util::{authorized, shift_balance};
+use crate::util::{assert_ata_recipient, authorized, shift_balance};
 
 /// `BuyAta` - public buy where the buyer's collateral and tokens use ATAs.
 ///
@@ -68,13 +69,20 @@ pub fn buy_ata(
     );
 
     assert!(owner.is_authorized, "buyer (ATA owner) must authorize the buy");
-    // The buyer's collateral ATA must hold the sale's collateral token. (The ATA
-    // program independently enforces a sender/recipient definition match on the
-    // chained transfer; we assert here too for a clear, early error.)
+    // The buyer's collateral ATA must hold the sale's collateral token.
     let (collateral_def, _) = read_fungible(&buyer_collateral_ata, "BuyAta: buyer collateral ATA");
     assert_eq!(
         collateral_def, state.collateral_definition_id,
         "buyer collateral ATA token does not match the sale's collateral definition"
+    );
+    // The recipient of leg 1. Upstream's ATA program does not police its
+    // recipient (it auto-creates a default one), so this is the only place the
+    // contract is enforced - see `util::assert_ata_recipient`.
+    assert_ata_recipient(
+        &collateral_vault,
+        &buyer_collateral_ata,
+        collateral_def,
+        "BuyAta collateral vault",
     );
 
     let token_program_id = collateral_vault.account.program_owner;
@@ -91,7 +99,10 @@ pub fn buy_ata(
     calls.push(ChainedCall::new(
         ata_program_id,
         vec![owner_auth, buyer_collateral_ata.clone(), collateral_vault.clone()],
-        &ata_core::Instruction::Transfer { amount: collateral_in },
+        &ata_core::Instruction::Transfer {
+            ata_program_id,
+            amount: collateral_in,
+        },
     ));
 
     // 2. collateral vault (PDA, now holding +collateral_in) -> treasury (fee).
@@ -180,6 +191,13 @@ pub fn sell_ata(
         token_def, state.token_definition_id,
         "seller token ATA does not match the sale's project token definition"
     );
+    // The recipient of leg 1 - see the note in `buy_ata`.
+    assert_ata_recipient(
+        &token_vault,
+        &seller_token_ata,
+        token_def,
+        "SellAta token vault",
+    );
 
     let outcome = apply_sell(state, tokens_in, min_collateral_out, clock_ts);
     let sale_id = sale.account_id;
@@ -191,7 +209,10 @@ pub fn sell_ata(
     calls.push(ChainedCall::new(
         ata_program_id,
         vec![owner_auth, seller_token_ata.clone(), token_vault.clone()],
-        &ata_core::Instruction::Transfer { amount: tokens_in },
+        &ata_core::Instruction::Transfer {
+            ata_program_id,
+            amount: tokens_in,
+        },
     ));
     // 2 + 3. collateral payout to the seller's collateral ATA, then the fee sweep
     //        to the treasury (shared with the keypair `sell` path).

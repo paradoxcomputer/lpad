@@ -26,12 +26,12 @@
 //! every Wrap/Unwrap. Both legs of each instruction move identical
 //! amounts in opposite directions.
 
-pub use nssa_core::program::PdaSeed;
-use nssa_core::{account::AccountId, program::ProgramId};
+pub use lee_core::program::PdaSeed;
+use lee_core::{account::AccountId, program::ProgramId};
 use serde::{Deserialize, Serialize};
 
 /// On-chain instruction enum. Matches the dispatcher in
-/// `programs/wlez/methods/guest/src/bin/wlez.rs`.
+/// `programs/wlez/src/main.rs`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Instruction {
     /// One-shot setup at program-deployment time. Claims the vault

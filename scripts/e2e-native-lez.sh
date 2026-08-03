@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 export RISC0_DEV_MODE=1 LOGOS_BLOCKCHAIN_CIRCUITS="$HOME/.logos-blockchain-circuits"
-LEZ="${LPAD_LEZ_DIR:-$PWD/_lez}"
+LEZ="${LPAD_LEZ_DIR:-$HOME/lez}"
 W=$LEZ/target/release/wallet
 L=cli/target/release/lpad
 SEQ=$LEZ/target/release/sequencer_service
@@ -20,7 +20,7 @@ echo ">> fresh dev sequencer :3044"
 pkill -f "port 3044" 2>/dev/null; sleep 1
 rm -rf /tmp/e2e-seq/data          # wipe → fresh genesis (a reused chain drains the shared funder / desyncs its nonce → "insufficient balance")
 mkdir -p /tmp/e2e-seq/data
-python3 -c 'import json;d=json.load(open("/tmp/lpad-rc4-seq/seqcfg.json"));d["home"]="/tmp/e2e-seq/data";json.dump(d,open("/tmp/e2e-seq/seqcfg.json","w"))'
+python3 -c 'import json;d=json.load(open("/tmp/lpad-v021-seq/seqcfg.json"));d["home"]="/tmp/e2e-seq/data";json.dump(d,open("/tmp/e2e-seq/seqcfg.json","w"))'
 pkill -f "port 3044" 2>/dev/null; sleep 1
 nohup $SEQ /tmp/e2e-seq/seqcfg.json --port 3044 >/tmp/e2e-seq/seq.log 2>&1 &
 sleep 6
@@ -32,14 +32,14 @@ mkwallet(){ # $1=dir
   echo dev > "$1/proof_mode"
 }
 HC=/tmp/e2e-creator; HB=/tmp/e2e-buyer; mkwallet $HC; mkwallet $HB
-wc(){ NSSA_WALLET_HOME_DIR=$HC bash -c "printf 'lpaddev\n' | $W $*"; }
-wb(){ NSSA_WALLET_HOME_DIR=$HB bash -c "printf 'lpaddev\n' | $W $*"; }
-lc(){ NSSA_WALLET_HOME_DIR=$HC $L "$@"; }
-lb(){ NSSA_WALLET_HOME_DIR=$HB $L "$@"; }
+wc(){ LEE_WALLET_HOME_DIR=$HC bash -c "printf 'lpaddev\n' | $W $*"; }
+wb(){ LEE_WALLET_HOME_DIR=$HB bash -c "printf 'lpaddev\n' | $W $*"; }
+lc(){ LEE_WALLET_HOME_DIR=$HC $L "$@"; }
+lb(){ LEE_WALLET_HOME_DIR=$HB $L "$@"; }
 
 echo ">> deploy bc + wlez"
-wc deploy-program programs/target/riscv-guest/bonding_curve-methods/bonding_curve-guest/riscv32im-risc0-zkvm-elf/release/bonding_curve.bin >/dev/null 2>&1; sleep 16
-wc deploy-program programs/target/riscv-guest/wlez-methods/wlez-guest/riscv32im-risc0-zkvm-elf/release/wlez.bin >/dev/null 2>&1; sleep 16
+wc deploy-program programs/artifacts/lpad/bonding_curve.bin >/dev/null 2>&1; sleep 16
+wc deploy-program programs/artifacts/lpad/wlez.bin >/dev/null 2>&1; sleep 16
 
 echo ">> accounts + funding (genesis -> creator, buyer)"
 CREATOR=$(wc account new public 2>&1 | grep -oE 'Public/[1-9A-HJ-NP-Za-km-z]{32,44}' | head -1)

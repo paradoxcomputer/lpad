@@ -7,7 +7,7 @@
 //! transactions (public path). See `online.rs`.
 
 use clap::{Parser, Subcommand};
-use nssa_core::account::AccountId;
+use lee_core::account::AccountId;
 
 use lpad_cli::fmt::{hex_account, parse_account, parse_program, parse_proof, parse_root, parse_weight_q64, q64_to_f64};
 use lpad_cli::online::{self, WalletPaths};
@@ -19,10 +19,10 @@ struct Cli {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]
     json: bool,
-    /// Wallet config path (default: $NSSA_WALLET_HOME_DIR/wallet_config.json).
+    /// Wallet config path (default: $LEE_WALLET_HOME_DIR/wallet_config.json).
     #[arg(long, global = true)]
     config: Option<String>,
-    /// Wallet storage path (default: $NSSA_WALLET_HOME_DIR/storage.json).
+    /// Wallet storage path (default: $LEE_WALLET_HOME_DIR/storage.json).
     #[arg(long, global = true)]
     storage: Option<String>,
     #[command(subcommand)]

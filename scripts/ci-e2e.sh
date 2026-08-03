@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LPAD CI gate: unit tests (no zkVM) + IDL drift + standalone E2E.
+# LPAD CI gate: unit tests (no zkVM) + guest-artifact freshness + standalone E2E.
 # Mirrors the ldex ci-e2e.sh. Run from the repo root.
 set -euo pipefail
 
@@ -13,24 +13,31 @@ fail() { echo "✗ $*" >&2; exit 1; }
 echo "== 1. Unit tests (core + host, no zkVM) =="
 ( cd "$PROG" && RISC0_SKIP_BUILD=1 cargo test -q \
     -p bonding_curve_core -p bonding_curve_program \
-    -p lbp_core -p lbp_program ) || fail "unit tests"
+    -p lbp_core -p lbp_program -p wlez_core -p wlez_program ) || fail "unit tests"
 
 echo "== 1b. CLI tests (fmt unit + clap + offline/error e2e against the binary) =="
 ( cd "$REPO/cli" && RISC0_SKIP_BUILD=1 cargo test -q ) || fail "cli tests"
 
-echo "== 2. IDL drift check (order-insensitive) =="
-# idl-gen collects helper account-types in hash order, so compare normalized
-# (sorted) forms - see scripts/normalize-idl.py.
-norm="$REPO/scripts/normalize-idl.py"
-for g in bonding_curve lbp; do
-  src="$PROG/$g/methods/guest/src/bin/$g.rs"
-  cur="$PROG/artifacts/${g}-idl.json"
-  [ -f "$cur" ] || fail "missing artifacts/${g}-idl.json"
-  ( cd "$PROG" && RISC0_SKIP_BUILD=1 cargo run -q -p idl-gen -- "$src" ) > /tmp/lpad-idl.json 2>/dev/null \
-    || fail "idl-gen failed for $g"
-  diff <(python3 "$norm" "$cur") <(python3 "$norm" /tmp/lpad-idl.json) >/dev/null 2>&1 \
-    || fail "IDL drift for $g (regenerate programs/artifacts/${g}-idl.json)"
+echo "== 2. Guest artifacts present =="
+# The committed ELFs under artifacts/lpad/ ARE the deployed programs: their RISC0
+# image ids are the on-chain program ids, baked into the SDK at compile time.
+#
+# This replaces the old IDL drift check. IDL *generation* went away with the LEZ
+# v0.2.1 upgrade (it was a SPEL feature, and SPEL no longer exists), so
+# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.1.md.
+for g in bonding_curve lbp wlez; do
+  [ -f "$PROG/artifacts/lpad/${g}.bin" ] || \
+    fail "missing artifacts/lpad/${g}.bin - run scripts/build-guests.sh"
 done
+# A reproducible rebuild must not change the committed bytes. Only checked when
+# Docker is available, since that is what makes the build deterministic.
+if [ "${LPAD_VERIFY_GUESTS:-0}" = "1" ] && docker info >/dev/null 2>&1; then
+  echo "   verifying the committed guests are reproducible..."
+  bash "$REPO/scripts/build-guests.sh" >/tmp/lpad-guestbuild.log 2>&1 \
+    || fail "guest rebuild failed (see /tmp/lpad-guestbuild.log)"
+  git -C "$REPO" diff --quiet -- programs/artifacts/lpad \
+    || fail "guest artifacts are stale - commit the rebuilt programs/artifacts/lpad/*.bin"
+fi
 
 echo "== 3. E2E vs in-process LEZ state (RISC0_DEV_MODE=1) =="
 ( cd "$PROG" && RISC0_DEV_MODE=1 cargo test -q -p integration_tests ) || fail "e2e"

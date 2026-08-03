@@ -13,7 +13,7 @@
 //! nonce, balance) is exercised by the integration tests; here we
 //! only verify the shape of what each instruction produces.
 
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
     program::{ChainedCall, Claim, ProgramId},
 };
@@ -174,12 +174,12 @@ fn initialize_claims_vault_and_chains_new_definition() {
     );
     // Vault post-state's program_owner must STAY at DEFAULT_PROGRAM_ID
     // here - the framework rewrites it to wlez_program_id after the
-    // Claim::Pda check passes (see lez/nssa/src/validated_state_diff.rs).
+    // Claim::Pda check passes (see lez/lee/state_machine/src/validated_state_diff/mod.rs).
     // Setting it eagerly violates validate_execution rule 4 and the
     // sequencer rejects the tx with ModifiedProgramOwner.
     assert_eq!(
         post_states[0].account().program_owner,
-        nssa_core::program::DEFAULT_PROGRAM_ID,
+        lee_core::program::DEFAULT_PROGRAM_ID,
         "vault post-state must keep DEFAULT_PROGRAM_ID; framework claims via Claim::Pda"
     );
     // The vault records the pinned native program id in its data so Wrap can
@@ -271,7 +271,7 @@ fn initialize_rejects_default_native_program() {
         payer_default(),
         WLEZ_PROGRAM_ID,
         TOKEN_PROGRAM_ID,
-        nssa_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "native" id
+        lee_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "native" id
     );
 }
 
@@ -285,7 +285,7 @@ fn initialize_rejects_default_token_program() {
     // EVIL token id is not rejectable on-chain - the guest cannot know the
     // canonical image id - so the SDK pins it participant-side instead.)
     let mut zero_owned_reference = reference_token_def();
-    zero_owned_reference.account.program_owner = nssa_core::program::DEFAULT_PROGRAM_ID;
+    zero_owned_reference.account.program_owner = lee_core::program::DEFAULT_PROGRAM_ID;
     let _ = crate::initialize::initialize(
         vault_default(),
         definition_default(),
@@ -293,7 +293,7 @@ fn initialize_rejects_default_token_program() {
         zero_owned_reference, // self-consistent with the zero pin, still rejected
         payer_default(),
         WLEZ_PROGRAM_ID,
-        nssa_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "token" id
+        lee_core::program::DEFAULT_PROGRAM_ID, // attacker's zero/no-op "token" id
         NATIVE_PROGRAM_ID,
     );
 }
@@ -313,14 +313,19 @@ fn wrap_emits_native_transfer_then_mint() {
     assert_eq!(post_states.len(), 4);
     assert_eq!(chained.len(), 2);
 
-    // 1st chained call: native transfer (instruction data = u128 amount).
+    // 1st chained call: native transfer. This is the drift-guard for the
+    // authenticated-transfer instruction encoding - under LEZ v0.2.0-rc4 the
+    // instruction was a bare `u128` amount, and v0.2.1 replaced it with a typed
+    // enum. `ChainedCall::new` accepts any `Serialize`, so a stale encoding
+    // compiles fine and only fails at run time (the callee reads the amount as an
+    // enum discriminant); this assertion is what catches it.
     let native_call = ChainedCall::new(
         NATIVE_PROGRAM_ID,
         vec![
             user_native_with(1000, true),
             vault_with(0),
         ],
-        &250u128,
+        &authenticated_transfer_core::Instruction::Transfer { amount: 250 },
     );
     assert_eq!(chained[0], native_call);
 

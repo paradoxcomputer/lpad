@@ -10,23 +10,35 @@ name = "lpad_sdk"
 [dependencies]
 bonding_curve_core = { path = "../programs/bonding_curve/core" }
 lbp_core = { path = "../programs/lbp/core" }
-token_core = { path = "../programs/token/core" }
-ata_core = { path = "../programs/ata/core" }
 wlez_core = { path = "../programs/wlez/core" }
-nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["host"] }
-nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
-wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
-common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4" }
-sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc4", features = ["client"] }
+# lpad's own three programs, as committed reproducible artifacts. This replaces
+# the old runtime ELF lookup (LPAD_BC_ELF / target-relative paths): image ids are
+# now compile-time constants, identical on every machine, so the CLI can no
+# longer submit against a program id that disagrees with what was deployed.
+lpad_guests = { path = "../programs", features = ["artifacts"] }
+# The canonical upstream token / ATA / authenticated-transfer programs, also as
+# committed artifacts. `artifacts` is mandatory and not a default feature.
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", default-features = false, features = [
+    "artifacts",
+] }
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", features = [
+    "host",
+] }
+# Online (wallet-backed) layer - build/sign/submit txs + read chain state.
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", features = [
+    "client"
+] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Silence the wallet's sync_to_block stdout chatter so it never corrupts the
-# CLI's (possibly --json) stdout during a pre-op private-view sync.
+# Silence the wallet's stdout chatter so it never corrupts the CLI's (possibly
+# --json) stdout. v0.2.1 prints considerably more than rc4 did: sync_to_block
+# logs per-block progress and calls store_persistent_data (which prints) on every
+# block, and decode_insert_privacy_preserving_transaction_results prints each
+# decoded account.
 gag = "1"
-
-[patch."https://github.com/logos-blockchain/logos-execution-zone.git"]
-nssa_core = { path = "../_lez/nssa/core" }
-nssa = { path = "../_lez/nssa" }
-wallet = { path = "../_lez/wallet" }
-common = { path = "../_lez/common" }

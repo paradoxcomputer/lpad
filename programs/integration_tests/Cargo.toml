@@ -4,16 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nssa = { workspace = true }
-nssa_core = { workspace = true, features = ["host"] }
+lee = { workspace = true, features = ["test-utils"] }
+lee_core = { workspace = true, features = ["host"] }
+# The shared genesis-state builder: seeds the clock accounts, the dummy
+# commitment and every built-in program. Replaces rc4's
+# V03State::new_with_genesis_accounts, which is gone.
+testnet_initial_state = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
+# Upstream token / ATA programs, as committed reproducible artifacts. lpad used
+# to build hardened forks of both from its own guest crates; v0.2.1 ships them
+# with machine-independent image ids, so the tests exercise the same programs the
+# live chain runs.
+programs = { workspace = true }
+# lpad's own three programs, from the committed artifacts under artifacts/lpad/.
+lpad_guests = { path = "..", features = ["artifacts"] }
 bonding_curve_core = { workspace = true }
 lbp_core = { workspace = true }
+wlez_core = { workspace = true }
 token_core = { workspace = true }
 ata_core = { workspace = true }
-wlez_core = { workspace = true }
-token-methods = { path = "../token/methods" }
-ata-methods = { path = "../ata/methods" }
-bonding_curve-methods = { path = "../bonding_curve/methods" }
-lbp-methods = { path = "../lbp/methods" }
-wlez-methods = { path = "../wlez/methods" }
-borsh = { version = "1.5", features = ["derive"] }
+borsh = { workspace = true }

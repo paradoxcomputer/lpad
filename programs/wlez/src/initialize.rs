@@ -15,7 +15,7 @@
 //! Subsequent Wrap mints inflate `definition.total_supply` and `vault.balance`
 //! in lock-step; Unwrap deflates them the same way.
 
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId, DEFAULT_PROGRAM_ID},
 };
@@ -57,7 +57,7 @@ pub fn initialize(
     // vault via Unwrap. Unlike the native program, the canonical token program
     // CANNOT be pinned to a compile-time literal the way `native_program_id` is
     // below: a token program is addressed by its guest image id, which is
-    // host-computed (`nssa::Program::token().id()` -> `compute_image_id`, not
+    // host-computed (`programs::token().id()` -> `compute_image_id`, not
     // available in-guest) and build-variable - and the live wallet built-in
     // `Program::token()` and the integration tests' separately-built
     // `token_methods` guest have DIFFERENT image ids, so no single literal is
@@ -140,7 +140,7 @@ pub fn initialize(
     //    framework's validate_execution requires the post-state's
     //    program_owner to *stay* at DEFAULT_PROGRAM_ID - the framework
     //    rewrites it to wlez_program_id after the claim check passes
-    //    (see lez/nssa/src/validated_state_diff.rs:211-239). Setting
+    //    (see lez/lee/state_machine/src/validated_state_diff/mod.rs:211-239). Setting
     //    program_owner eagerly trips rule 4 of validate_execution
     //    (`pre.program_owner != post.program_owner` is forbidden) and
     //    the sequencer rejects the whole tx with ModifiedProgramOwner.
@@ -214,7 +214,7 @@ pub fn expected_definition_after_init(
 /// 0 so the holding starts at 0 balance.
 pub fn expected_init_holding_after_init(
     init_holding: &AccountWithMetadata,
-    definition_id: nssa_core::account::AccountId,
+    definition_id: lee_core::account::AccountId,
     token_program_id: ProgramId,
 ) -> Account {
     let mut a = init_holding.account.clone();

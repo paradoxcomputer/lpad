@@ -5,41 +5,87 @@
 use std::path::PathBuf;
 
 use lpad_sdk::{BcCreateArgs, LaunchpadClient, LbpCreateArgs};
-use nssa_core::{account::AccountId, program::ProgramId};
+use lee_core::{account::AccountId, program::ProgramId};
 
 use crate::ui;
 
-/// Resolved wallet config + storage paths.
+/// Resolved wallet config + storage + statistics paths.
 pub struct WalletPaths {
     pub config: PathBuf,
     pub storage: PathBuf,
+    /// Per-sequencer latency samples. New in LEZ v0.2.1; see
+    /// [`LaunchpadClient::record_sequencer_statistics`].
+    pub statistics: PathBuf,
 }
 
 impl WalletPaths {
     /// Resolve wallet paths with zero required config. Precedence:
-    /// explicit `--config`/`--storage` > `$NSSA_WALLET_HOME_DIR` > the default
+    /// explicit `--config`/`--storage` > `$LEE_WALLET_HOME_DIR` > the default
     /// home `~/.lpad`. Also auto-detects the proof mode: if `RISC0_DEV_MODE`
     /// isn't already set, it honors a `proof_mode` marker ("dev"/"real") written
     /// next to the wallet by the bootstrap - so the user never has to export
-    /// `RISC0_DEV_MODE` or `NSSA_WALLET_HOME_DIR` for a bootstrapped chain.
+    /// `RISC0_DEV_MODE` or `LEE_WALLET_HOME_DIR` for a bootstrapped chain.
     pub fn resolve(config: Option<String>, storage: Option<String>) -> Result<Self, String> {
-        let home = std::env::var("NSSA_WALLET_HOME_DIR")
+        // LEZ v0.2.1 renamed the home-dir variable; keep accepting the old name so
+        // existing shells and scripts keep working.
+        let home = std::env::var("LEE_WALLET_HOME_DIR")
+            .or_else(|_| std::env::var("NSSA_WALLET_HOME_DIR"))
             .ok()
             .unwrap_or_else(default_home);
         let config = PathBuf::from(config.unwrap_or_else(|| format!("{home}/wallet_config.json")));
         let storage = PathBuf::from(storage.unwrap_or_else(|| format!("{home}/storage.json")));
+        let statistics = config
+            .parent()
+            .map_or_else(|| PathBuf::from("statistics.json"), |d| d.join("statistics.json"));
         if !config.exists() {
             return Err(format!(
                 "no wallet config at {} - run `bash scripts/bootstrap.sh` to create one, \
-                 or pass --config/--storage (or set $NSSA_WALLET_HOME_DIR)",
+                 or pass --config/--storage (or set $LEE_WALLET_HOME_DIR)",
                 config.display()
             ));
         }
+        reject_pre_v021_wallet(&config, &storage)?;
         if let Some(dir) = config.parent() {
             detect_proof_mode(dir);
         }
-        Ok(Self { config, storage })
+        Ok(Self { config, storage, statistics })
     }
+}
+
+/// Fail with an actionable message on a wallet directory created by LEZ
+/// v0.2.0-rc4 or earlier.
+///
+/// Such a directory is not upgradable: `storage.json` moved its accounts under a
+/// new `key_chain` object, `wallet_config.json` replaced `sequencer_addr` with a
+/// `sequencers` array, private account ids are now derived with the viewing key
+/// mixed in, and the note-encryption KDF moved to v0.3 - so previously-decoded
+/// notes cannot be read back. Without this check the user would see a raw serde
+/// error from deep inside the wallet.
+fn reject_pre_v021_wallet(config: &std::path::Path, storage: &std::path::Path) -> Result<(), String> {
+    let stale = |what: &str| {
+        Err(format!(
+            "{} was created by LEZ v0.2.0-rc4 and cannot be upgraded to v0.2.1 \
+             (storage schema, private-account derivation and note encryption all changed). \
+             Move {} aside and re-run `bash scripts/bootstrap.sh` against a fresh chain.",
+            what,
+            config.parent().unwrap_or(config).display(),
+        ))
+    };
+    if let Ok(text) = std::fs::read_to_string(config)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+        && v.get("sequencers").is_none()
+        && (v.get("sequencer_addr").is_some() || v.get("initial_accounts").is_some())
+    {
+        return stale("this wallet config");
+    }
+    if let Ok(text) = std::fs::read_to_string(storage)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+        && v.get("key_chain").is_none()
+        && v.get("accounts").is_some()
+    {
+        return stale("this wallet storage");
+    }
+    Ok(())
 }
 
 /// Default wallet home when nothing is specified: `~/.lpad`.
@@ -104,12 +150,25 @@ fn run<T>(
 ) -> Result<T, String> {
     let sp = ui::Spinner::new(start, json);
     let result = (|| {
-        let mut c = LaunchpadClient::open(paths.config.clone(), paths.storage.clone())?;
+        let mut c = LaunchpadClient::open(
+            paths.config.clone(),
+            paths.storage.clone(),
+            paths.statistics.clone(),
+        )?;
         let h = sp.handle();
         c.set_progress(move |m| {
             h.set_message(m.to_owned());
         });
-        op(&mut c)
+        let out = op(&mut c);
+        // Persist the sequencer latency samples this process gathered. The CLI
+        // opens a fresh wallet per command, and v0.2.1 calibrates any sequencer
+        // missing from statistics.json with ~100 sequential requests, so without
+        // this every invocation would pay that cost. Best-effort: a failure here
+        // must not mask the command's own result.
+        if out.is_ok() {
+            let _ = c.record_sequencer_statistics();
+        }
+        out
     })();
     sp.clear();
     result

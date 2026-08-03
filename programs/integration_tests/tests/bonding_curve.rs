@@ -13,11 +13,11 @@ use bonding_curve_core::{
     buy_tokens_out, compute_collateral_vault_pda, compute_sale_pda, compute_token_vault_pda,
     Instruction, SaleState, SaleStatus, CLOCK_01,
 };
-use nssa::{
+use lee::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, Data, Nonce};
 use token_core::{TokenDefinition, TokenHolding};
 
 // sale parameters shared by the tests
@@ -28,11 +28,11 @@ const R: u128 = 200_000;
 const FEE_BPS: u128 = 100; // 1%
 const NONCE: u64 = 0;
 
-fn bc() -> nssa_core::program::ProgramId {
-    bonding_curve_methods::BONDING_CURVE_ID
+fn bc() -> lee_core::program::ProgramId {
+    lpad_guests::bonding_curve().id()
 }
-fn token() -> nssa_core::program::ProgramId {
-    token_methods::TOKEN_ID
+fn token() -> lee_core::program::ProgramId {
+    programs::token().id()
 }
 fn id_of(key: &PrivateKey) -> AccountId {
     AccountId::from(&PublicKey::new_from_private_key(key))
@@ -66,10 +66,12 @@ fn bal(state: &V03State, id: AccountId) -> u128 {
     }
 }
 fn deploy(state: &mut V03State) {
-    for elf in [
-        token_methods::TOKEN_ELF.to_vec(),
-        bonding_curve_methods::BONDING_CURVE_ELF.to_vec(),
-    ] {
+    // The built-in programs (token, ATA, clock, authenticated_transfer, ...) are
+    // already registered by `testnet_initial_state::initial_state()`, so
+    // re-deploying them now fails with `ProgramAlreadyExists`. Only lpad's own
+    // program needs deploying.
+    {
+        let elf = lpad_guests::bonding_curve().elf().to_vec();
         let msg = program_deployment_transaction::Message::new(elf);
         state
             .transition_from_program_deployment_transaction(&ProgramDeploymentTransaction::new(msg))
@@ -112,7 +114,7 @@ fn open_sale(i: &Ids, one_directional: bool) -> SaleState {
         token_vault_id: i.token_vault,
         collateral_vault_id: i.collateral_vault,
         treasury_id: i.treasury,
-        ata_program_id: ata_methods::ATA_ID,
+        ata_program_id: programs::ata().id(),
         fee_bps: FEE_BPS,
         one_directional,
         end_timestamp_ms: 0,
@@ -157,7 +159,7 @@ fn create_sale_deposits_and_initializes_state() {
     let creator_token_id = id_of(&creator_token_key);
     let i = ids(id_of(&creator_key));
 
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     state.force_insert_account(creator_token_id, fungible(i.token_def, D + R));
     state.force_insert_account(i.creator, fungible(i.collateral_def, 0));
@@ -179,7 +181,7 @@ fn create_sale_deposits_and_initializes_state() {
         end_timestamp_ms: 0,
         min_duration_ms: 0,
         nonce: NONCE,
-        ata_program_id: ata_methods::ATA_ID,
+        ata_program_id: programs::ata().id(),
         deadline: u64::MAX,
     };
     let message = public_transaction::Message::try_new(
@@ -207,7 +209,7 @@ fn create_sale_deposits_and_initializes_state() {
     assert_eq!(state.get_account_by_id(i.sale).program_owner, bc());
     assert_eq!(sale.sale_reserve, D);
     assert_eq!(sale.k, VT * VC);
-    assert_eq!(sale.ata_program_id, ata_methods::ATA_ID, "ATA program pinned at creation");
+    assert_eq!(sale.ata_program_id, programs::ata().id(), "ATA program pinned at creation");
     assert!(matches!(sale.status, SaleStatus::Open));
     assert_eq!(bal(&state, i.token_vault), D + R);
     assert_eq!(bal(&state, creator_token_id), 0);
@@ -219,7 +221,7 @@ fn create_sale_deposits_and_initializes_state() {
 fn public_buy_moves_tokens_collateral_and_fee() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_sale(&mut state, &i);
 
@@ -280,7 +282,7 @@ fn public_buy_moves_tokens_collateral_and_fee() {
 fn atomic_disposable_public_buy_leg_is_drift_free() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_open_sale(&mut state, &i);
 

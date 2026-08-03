@@ -8,7 +8,7 @@ use lbp_core::{
     allowlist_leaf, fixed_price_tokens_out, is_open_allowlist, merkle_verify, read_fungible,
     PoolState, SaleStatus, MAX_ALLOWLIST_PROOF_DEPTH,
 };
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -97,7 +97,7 @@ fn buy_transfers(
     collateral_vault: &AccountWithMetadata,
     token_vault: &AccountWithMetadata,
     recipient: &AccountWithMetadata,
-    pool_id: nssa_core::account::AccountId,
+    pool_id: lee_core::account::AccountId,
     collateral_in: u128,
     tokens_out: u128,
 ) -> Vec<ChainedCall> {

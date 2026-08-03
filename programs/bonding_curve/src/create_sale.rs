@@ -19,7 +19,7 @@ use bonding_curve_core::{
     compute_token_vault_pda, compute_token_vault_pda_seed, read_fungible, SaleState, SaleStatus,
     MAX_FEE_BPS, MAX_METADATA_LEN, MAX_VIRT_COLLATERAL,
 };
-use nssa_core::{
+use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId, DEFAULT_PROGRAM_ID},
 };

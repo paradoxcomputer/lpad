@@ -8,7 +8,7 @@ use bonding_curve_core::{
     buy_tokens_out, compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, read_fungible,
     SaleState, SaleStatus,
 };
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
@@ -85,7 +85,7 @@ fn buy_transfers(
     treasury: &AccountWithMetadata,
     token_vault: &AccountWithMetadata,
     recipient: &AccountWithMetadata,
-    sale_id: nssa_core::account::AccountId,
+    sale_id: lee_core::account::AccountId,
     outcome: &BuyOutcome,
 ) -> Vec<ChainedCall> {
     let token_program_id = payer.account.program_owner;

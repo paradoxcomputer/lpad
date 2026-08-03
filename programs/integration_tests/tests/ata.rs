@@ -14,12 +14,12 @@ use bonding_curve_core::{
     buy_tokens_out, compute_collateral_vault_pda, compute_sale_pda, compute_token_vault_pda,
     sell_collateral_out, Instruction, SaleState, SaleStatus, CLOCK_01,
 };
-use nssa::{
+use lee::{
     program_deployment_transaction::{self, ProgramDeploymentTransaction},
     public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
 };
-use nssa_core::account::{Account, AccountId, Data, Nonce};
-use nssa_core::program::ProgramId;
+use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::program::ProgramId;
 use token_core::TokenHolding;
 
 const VT: u128 = 2_000_000;
@@ -30,13 +30,13 @@ const FEE_BPS: u128 = 100; // 1%
 const NONCE: u64 = 0;
 
 fn bc() -> ProgramId {
-    bonding_curve_methods::BONDING_CURVE_ID
+    lpad_guests::bonding_curve().id()
 }
 fn token() -> ProgramId {
-    token_methods::TOKEN_ID
+    programs::token().id()
 }
 fn ata_prog() -> ProgramId {
-    ata_methods::ATA_ID
+    programs::ata().id()
 }
 fn id_of(key: &PrivateKey) -> AccountId {
     AccountId::from(&PublicKey::new_from_private_key(key))
@@ -60,11 +60,12 @@ fn ata_addr(owner: AccountId, def: AccountId) -> AccountId {
     get_associated_token_account_id(&ata_prog(), &compute_ata_seed(owner, def))
 }
 fn deploy(state: &mut V03State) {
-    for elf in [
-        token_methods::TOKEN_ELF.to_vec(),
-        ata_methods::ATA_ELF.to_vec(),
-        bonding_curve_methods::BONDING_CURVE_ELF.to_vec(),
-    ] {
+    // The built-in programs (token, ATA, clock, authenticated_transfer, ...) are
+    // already registered by `testnet_initial_state::initial_state()`, so
+    // re-deploying them now fails with `ProgramAlreadyExists`. Only lpad's own
+    // program needs deploying.
+    {
+        let elf = lpad_guests::bonding_curve().elf().to_vec();
         assert!(
             !elf.is_empty(),
             "guest ELFs not built; run without RISC0_SKIP_BUILD"
@@ -154,7 +155,7 @@ fn seed_sale(state: &mut V03State, i: &Ids, real_collateral: u128, vault_collate
 fn bc_buy_ata_routes_collateral_and_tokens_through_atas() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_sale(&mut state, &i, 0, 0);
 
@@ -215,7 +216,7 @@ fn bc_buy_ata_routes_collateral_and_tokens_through_atas() {
 fn bc_sell_ata_routes_tokens_and_collateral_through_atas() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     // Pre-raised sale: 50k real collateral, vault funded with the same.
     let raised: u128 = 50_000;
@@ -280,7 +281,7 @@ fn bc_sell_ata_routes_tokens_and_collateral_through_atas() {
 fn bc_buy_ata_rejects_a_substituted_ata_program() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
     let i = ids(creator);
-    let mut state = V03State::new_with_genesis_accounts(&[], vec![], 0);
+    let mut state = testnet_initial_state::initial_state();
     deploy(&mut state);
     seed_sale(&mut state, &i, 0, 0);
 

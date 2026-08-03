@@ -31,22 +31,36 @@ trader, so the pool stays solvent. License: **MIT OR Apache-2.0**.
 
 ## Build & test
 
-Needs a LEZ `v0.2.0-rc4` checkout + the RISC Zero toolchain. Point `setup.sh` at your
-LEZ checkout with `$LPAD_LEZ_DIR` (defaults to `~/lez`); it symlinks it as `_lez` in the
-repo, and every other script defaults to that symlink - no machine-specific paths.
+Builds against LEZ **`v0.2.1`**, pulled straight from the published git tag - there is
+no LEZ checkout to wire up and no path-patching. (A checkout is only needed to *run* a
+local sequencer; see `run-sequencer.sh`.) See
+[`docs/UPGRADE-v0.2.1.md`](docs/UPGRADE-v0.2.1.md) for what changed from `v0.2.0-rc4`.
+
+Two things beyond `cargo` are required: **Docker** + `cargo-risczero` (only to rebuild
+the zkVM guests, whose prebuilt ELFs are committed), and **libpcsclite** (the v0.2.1
+wallet links keycard support unconditionally). `setup.sh` checks both.
 
 ```bash
-bash setup.sh                                                 # create the _lez symlink to your LEZ checkout
-bash scripts/ci-e2e.sh                                        # full gate: unit + CLI + IDL drift + e2e
-RISC0_SKIP_BUILD=1 cargo test --manifest-path cli/Cargo.toml  # CLI tests (fast, no guest build)
+bash setup.sh                                                 # verify the toolchain
+bash scripts/ci-e2e.sh                                        # full gate: unit + CLI + artifacts + e2e
+RISC0_SKIP_BUILD=1 cargo test --manifest-path cli/Cargo.toml  # CLI tests (fast)
 cd programs && RISC0_DEV_MODE=1 cargo test --workspace        # tests only - dev/fake proofs for speed; the launchpad itself defaults to real proofs
 bash run-sequencer.sh                                         # local sequencer on :3040
 bash scripts/bootstrap.sh                                     # deploy programs + fund a demo sale
 ```
 
+The three launchpad programs are compiled to riscv32 inside a pinned container, so their
+RISC0 image ids - which *are* the on-chain program ids - are byte-identical on every
+machine. The resulting ELFs are committed under `programs/artifacts/lpad/` and embedded
+into the SDK at compile time. Rebuild them only when guest-visible code changes:
+
+```bash
+bash scripts/build-guests.sh    # needs Docker; a changed .bin means a redeploy
+```
+
 ## Run the CLI
 
-Install `lpad` to `~/.local/bin` (the launcher bakes in the guest ELF paths + circuits):
+Install `lpad` to `~/.local/bin`:
 
 ```bash
 bash scripts/install-cli.sh

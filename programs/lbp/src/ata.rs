@@ -7,16 +7,18 @@
 //! leg is the vault-PDA-authorized `token::Transfer` used by `buy::buy`. The
 //! keypair path (`buy::buy`) stays intact. LBP has no per-swap fee (the protocol
 //! fee is taken at close), so there is no fee leg. Both vaults are pre-seeded at
-//! `CreateSale`, so the `ata::Transfer` collateral leg works on the first buy.
+//! `CreateSale`, so the `ata::Transfer` collateral leg always has an initialized
+//! recipient - which `util::assert_ata_recipient` requires, since the canonical
+//! upstream ATA program would otherwise auto-create a default one.
 
 use lbp_core::{compute_token_vault_pda_seed, is_open_allowlist, read_fungible, PoolState};
-use nssa_core::{
+use lee_core::{
     account::{AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 
 use crate::buy::{apply_buy, check_accounts};
-use crate::util::authorized;
+use crate::util::{assert_ata_recipient, authorized};
 
 /// `BuyAta` - public LBP buy, priced at the on-chain clock time, with the
 /// buyer's collateral and tokens using ATAs.
@@ -65,6 +67,15 @@ pub fn buy_ata(
         collateral_def, state.collateral_definition_id,
         "buyer collateral ATA token does not match the pool's collateral definition"
     );
+    // The recipient of leg 1. The canonical upstream ATA program does not police
+    // its recipient (it auto-creates a default one), so this is the only place the
+    // contract is enforced - see `util::assert_ata_recipient`.
+    assert_ata_recipient(
+        &collateral_vault,
+        &buyer_collateral_ata,
+        collateral_def,
+        "BuyAta collateral vault",
+    );
 
     let t_ms = u64::try_from(clock_ts.max(0)).expect("clock must be non-negative");
     let outcome = apply_buy(state, collateral_in, min_tokens_out, t_ms, clock_block_id, true);
@@ -80,7 +91,10 @@ pub fn buy_ata(
         ChainedCall::new(
             ata_program_id,
             vec![owner_auth, buyer_collateral_ata.clone(), collateral_vault.clone()],
-            &ata_core::Instruction::Transfer { amount: collateral_in },
+            &ata_core::Instruction::Transfer {
+                ata_program_id,
+                amount: collateral_in,
+            },
         ),
         // 2. token vault (PDA) -> buyer token ATA.
         ChainedCall::new(

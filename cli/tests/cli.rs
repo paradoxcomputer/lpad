@@ -9,12 +9,13 @@
 use std::process::{Command, Output};
 
 use lpad_cli::fmt::{hex_account, parse_account, parse_program, parse_weight_q64, q64_to_f64};
-use nssa_core::account::AccountId;
+use lee_core::account::AccountId;
 
 fn lpad(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lpad"))
         .args(args)
         // Don't let an ambient wallet home leak into the "no wallet" error tests.
+        .env_remove("LEE_WALLET_HOME_DIR")
         .env_remove("NSSA_WALLET_HOME_DIR")
         .output()
         .expect("spawn lpad")

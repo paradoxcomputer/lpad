@@ -107,7 +107,7 @@ fn fixed_price_mode_is_constant() {
 /// already-closed guard.
 mod lifecycle_tests {
     use lbp_core::{weight_token_q64, PoolState, SaleStatus};
-    use nssa_core::{
+    use lee_core::{
         account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
         program::ProgramId,
     };

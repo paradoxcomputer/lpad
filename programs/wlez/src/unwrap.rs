@@ -28,7 +28,7 @@
 //! End-state invariant: `vault.balance == definition.total_supply`
 //! preserved by construction - both shrink by `amount`.
 
-use nssa_core::{
+use lee_core::{
     account::AccountWithMetadata,
     program::{AccountPostState, ChainedCall, ProgramId},
 };
