@@ -46,15 +46,15 @@ These flags work on **every** command:
 | Flag | Default | Meaning |
 |---|---|---|
 | `--json` | off | Emit machine-readable JSON instead of human-readable text. |
-| `--config <PATH>` | `$NSSA_WALLET_HOME_DIR/wallet_config.json` | Wallet config file. |
-| `--storage <PATH>` | `$NSSA_WALLET_HOME_DIR/storage.json` | Wallet storage file. |
+| `--config <PATH>` | `$LEE_WALLET_HOME_DIR/wallet_config.json` | Wallet config file. |
+| `--storage <PATH>` | `$LEE_WALLET_HOME_DIR/storage.json` | Wallet storage file. |
 
-Wallet location is resolved as: **`--config`/`--storage` → `$NSSA_WALLET_HOME_DIR`
+Wallet location is resolved as: **`--config`/`--storage` → `$LEE_WALLET_HOME_DIR`
 → `~/.lpad`** (the default home).
 
 | Environment variable | Purpose |
 |---|---|
-| `NSSA_WALLET_HOME_DIR` | Wallet home directory (overrides the `~/.lpad` default). |
+| `LEE_WALLET_HOME_DIR` | Wallet home directory (overrides the `~/.lpad` default). |
 | `RISC0_DEV_MODE` | **Real proofs by default.** Set `1` for dev/fake proofs (fast). If unset, `lpad` honors a `proof_mode` marker (`dev`/`real`) next to the wallet (the bootstrap records the sequencer's mode); absent a marker it uses real proofs. |
 | `LPAD_TX_TTL_MS` | Transaction deadline TTL in ms (default `120000`). |
 | `LPAD_BC_ELF`, `LPAD_LBP_ELF`, `LPAD_WLEZ_ELF`, `LPAD_ATA_ELF` | Guest ELF paths; set automatically by the install-cli launcher. |

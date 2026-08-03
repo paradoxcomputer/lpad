@@ -82,7 +82,7 @@ lpad bc buy-private --sale <id> --in 1000     # private buy: deshield -> public 
 ```
 
 `--program` and holdings auto-detect; pass `--config`/`--storage` or set
-`$NSSA_WALLET_HOME_DIR` to target a non-default wallet.
+`$LEE_WALLET_HOME_DIR` to target a non-default wallet.
 
 > 📖 **Full command reference** - every command, flag, and a runnable example:
 > **[cli/README.md](cli/README.md)**.
@@ -166,7 +166,8 @@ dependency needs no in-proof clock (which would drift).
 ## Layout
 
 ```
-programs/   bonding_curve/{core,,methods}, lbp/{core,,methods}  (core math, host logic, SPEL guest)
+programs/   bonding_curve/{core,}, lbp/{core,}, wlez/{core,}  (core math, host logic, guest main.rs)
+            artifacts/lpad/*.bin  (committed reproducible guest ELFs = the program ids)
             token/ ata/ wlez/   vendored LEZ programs (ata also powers the ATA buy/sell path; same image ids → ldex interop)
             integration_tests/  E2E vs in-process V03State
 sdk/        lpad-sdk: full lifecycle (discover/quote/buy/sell/create/withdraw - public + private + ATA)
@@ -175,5 +176,5 @@ cli/        lpad CLI over the SDK (offline quotes/PDAs + online ops); see cli/RE
 
 Each program follows the LEZ triple: `<name>/core` (types, PDA derivation, pure pricing
 math), `<name>` (host logic → `(Vec<AccountPostState>, Vec<ChainedCall>)`),
-`<name>/methods` (the SPEL `#[lez_program]` guest compiled to a zkVM ELF).
+`<name>/src/main.rs` (the guest entrypoint, cross-compiled to a zkVM ELF).
 ```
