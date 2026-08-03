@@ -332,6 +332,74 @@ pub struct LbpCreateArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Networks
+// ---------------------------------------------------------------------------
+
+/// The Logos public testnet sequencer. The default: it is the network most
+/// users mean, and it is operated independently of this repo.
+pub const TESTNET_SEQUENCER: &str = "https://testnet.lez.logos.co";
+
+/// The Paradox Computer testnet sequencer.
+pub const PARADOX_SEQUENCER: &str = "https://seq-testnet.paradox.computer";
+
+/// Which sequencer to talk to.
+///
+/// lpad has no bundled local sequencer - it targets real networks. Mirrors the
+/// LEZ wallet's own `NetworkAlias` so the vocabulary matches, with `paradox`
+/// added.
+///
+/// Both known networks currently run LEZ **v0.2.0**, which is why the crates are
+/// pinned there: v0.2.1 changes the built-in program image ids (token,
+/// authenticated_transfer, the privacy circuit), so a v0.2.1 build cannot
+/// transact against these chains at all.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Network {
+    /// `https://testnet.lez.logos.co`
+    #[default]
+    Testnet,
+    /// `https://seq-testnet.paradox.computer`
+    Paradox,
+    /// Any other sequencer URL, passed through verbatim.
+    Custom(String),
+}
+
+impl Network {
+    /// Resolve `testnet`, `paradox`, or a sequencer URL.
+    pub fn parse(alias: &str) -> Result<Self> {
+        match alias.trim() {
+            "testnet" | "logos" => Ok(Self::Testnet),
+            "paradox" => Ok(Self::Paradox),
+            other if other.starts_with("http://") || other.starts_with("https://") => {
+                Ok(Self::Custom(other.to_owned()))
+            }
+            other => Err(format!(
+                "unknown network {other:?} - use `testnet`, `paradox`, or an http(s) sequencer URL"
+            )),
+        }
+    }
+
+    /// The sequencer URL this network resolves to.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Testnet => TESTNET_SEQUENCER,
+            Self::Paradox => PARADOX_SEQUENCER,
+            Self::Custom(u) => u,
+        }
+    }
+}
+
+impl std::fmt::Display for Network {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Testnet => write!(f, "testnet"),
+            Self::Paradox => write!(f, "paradox"),
+            Self::Custom(u) => write!(f, "{u}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -343,39 +411,32 @@ pub struct LaunchpadClient {
 }
 
 impl LaunchpadClient {
-    /// Open the LEZ wallet (config + storage + statistics) and connect to its
-    /// sequencer.
+    /// Open the LEZ wallet (config + storage) and connect to its sequencer.
     ///
-    /// `statistics` is new in LEZ v0.2.1: the wallet now keeps per-sequencer
-    /// latency samples there and calibrates any sequencer missing from the file
-    /// on open. See [`Self::record_sequencer_statistics`] - without persisting it,
-    /// every process pays the calibration round-trips again.
-    pub fn open(config: PathBuf, storage: PathBuf, statistics: PathBuf) -> Result<Self> {
+    /// `network`, when given, overrides the sequencer in the wallet config
+    /// *without rewriting the file* - so `--network` is a per-invocation switch
+    /// and cannot silently repoint a wallet for later commands.
+    pub fn open(config: PathBuf, storage: PathBuf, network: Option<&Network>) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("tokio runtime: {e}"))?;
-        // v0.2.1 made this async (it may calibrate sequencers on open).
-        let wallet = rt
-            .block_on(WalletCore::new_update_chain(config, storage, statistics, None))
+        let overrides = match network {
+            None => None,
+            Some(n) => {
+                let url = n
+                    .url()
+                    .parse()
+                    .map_err(|e| format!("invalid sequencer URL for network {n}: {e}"))?;
+                Some(wallet::config::WalletConfigOverrides {
+                    sequencer_addr: Some(url),
+                    ..Default::default()
+                })
+            }
+        };
+        let wallet = WalletCore::new_update_chain(config, storage, overrides)
             .map_err(|e| format!("open wallet: {e}"))?;
         Ok(Self { wallet, rt, progress: None })
-    }
-
-    /// Persist the sequencer latency statistics gathered during this session.
-    ///
-    /// On open, LEZ v0.2.1 calibrates every configured sequencer that is absent
-    /// from `statistics.json` by issuing `calibration_limit` (default 100)
-    /// sequential `getLastBlockId` requests. Because the CLI opens a fresh wallet
-    /// per command, skipping this would make every single invocation pay those
-    /// round-trips before doing any work. Call it once after a successful
-    /// command - this is what the upstream wallet CLI does.
-    pub fn record_sequencer_statistics(&mut self) -> Result<()> {
-        let rt = &self.rt;
-        let wallet = &mut self.wallet;
-        let _silence = gag::Gag::stdout().ok();
-        rt.block_on(async { wallet.client_rotation().await })
-            .map_err(|e| format!("record sequencer statistics: {e}"))
     }
 
     /// Register a progress sink. The SDK calls it with a short phase label
@@ -399,10 +460,8 @@ impl LaunchpadClient {
 
     /// Current sequencer block height.
     pub fn block_height(&self) -> Result<u64> {
-        // v0.2.1 replaced the public `sequencer_client` field with methods on
-        // WalletCore that route through its multi-sequencer client.
         self.rt
-            .block_on(async { self.wallet.get_last_block_id().await })
+            .block_on(async { self.wallet.sequencer_client.get_last_block_id().await })
             .map_err(|e| format!("get block height: {e}"))
     }
 
@@ -445,7 +504,7 @@ impl LaunchpadClient {
         self.rt.block_on(async {
             let nonces = self
                 .wallet
-                .get_accounts_nonces(signers)
+                .get_accounts_nonces(signers.to_vec())
                 .await
                 .map_err(|e| format!("fetch nonces: {e}"))?;
             let mut keys: Vec<&lee::PrivateKey> = Vec::with_capacity(signers.len());
@@ -460,20 +519,15 @@ impl LaunchpadClient {
                 .map_err(|e| format!("build message: {e}"))?;
             let witness = WitnessSet::for_message(&message, &keys);
             self.report("submitting transaction");
-            // `helm_owned()` replaces the removed public `sequencer_client` field;
-            // it returns the leading sequencer, the same destination the wallet's
-            // own metered send would pick at the default distribution limit.
             let hash = self
                 .wallet
-                .helm_owned()
+                .sequencer_client
                 .send_transaction(LeeTransaction::Public(PublicTransaction::new(message, witness)))
                 .await
                 .map_err(|e| format!("submit: {e}"))?;
             self.report("waiting for inclusion");
-            // Renamed from `poll_native_token_transfer`, and now also returns the
-            // block the tx landed in.
             self.wallet
-                .poll_transaction(hash)
+                .poll_native_token_transfer(hash)
                 .await
                 .map_err(|e| format!("tx rejected / not included: {e}"))?;
             Ok(to_hash(hash))
@@ -1849,9 +1903,8 @@ impl LaunchpadClient {
                 .send_privacy_preserving_tx(vec![from, to], data, &token_prog)
                 .await
                 .map_err(|e| format!("privacy transfer failed: {e:?}"))?;
-            // Renamed from `poll_native_token_transfer`; now returns the block too.
-            let (tx, _block_id) = wallet
-                .poll_transaction(hash)
+            let tx = wallet
+                .poll_native_token_transfer(hash)
                 .await
                 .map_err(|e| format!("tx not included: {e}"))?;
             if let LeeTransaction::PrivacyPreserving(ppt) = tx
@@ -1892,4 +1945,56 @@ fn to_hash(h: common::HashType) -> TxHash {
         out.copy_from_slice(b);
     }
     out
+}
+
+#[cfg(test)]
+mod chain_parity {
+    //! Guards that the LEZ pin still matches the networks lpad targets.
+    //!
+    //! A program is addressed by its RISC0 image id, so lpad and the chain must
+    //! agree on the built-in ids or nothing works: a token transfer would be
+    //! dispatched to a program that is not deployed, and shielded proofs would be
+    //! rejected by a different privacy circuit.
+    //!
+    //! These ids were read off BOTH live sequencers (`getProgramIds`, plus the
+    //! clock account's `program_owner`, which is an independent check because the
+    //! clock account id is a fixed literal rather than an image id). They are what
+    //! forced the pin to v0.2.0: v0.2.1 computes different values for all of them.
+    //!
+    //! If one of these fails after a LEZ version bump, the new version is NOT
+    //! deployed on these networks yet - do not ship it.
+
+    /// `token` on testnet.lez.logos.co and seq-testnet.paradox.computer.
+    const DEPLOYED_TOKEN: [u32; 8] = [
+        2282739141, 348907455, 1046946228, 3735699860, 585462133, 3426087150, 772528164, 2090518099,
+    ];
+    /// `authenticated_transfer` on both networks.
+    const DEPLOYED_AUTH_TRANSFER: [u32; 8] = [
+        3170810844, 2526647253, 999807262, 1205602179, 3401962591, 3484055895, 2106546407,
+        1900691388,
+    ];
+    /// `clock` on both networks - cross-checked against the on-chain clock
+    /// account's `program_owner`.
+    const DEPLOYED_CLOCK: [u32; 8] = [
+        979979912, 3730255152, 96781338, 501898186, 3738241015, 2113460497, 2222463973, 1670293850,
+    ];
+
+    #[test]
+    fn builtin_program_ids_match_the_deployed_networks() {
+        assert_eq!(
+            programs::token().id(),
+            DEPLOYED_TOKEN,
+            "the pinned LEZ version's token program is not the one deployed on the target networks"
+        );
+        assert_eq!(
+            programs::authenticated_transfer().id(),
+            DEPLOYED_AUTH_TRANSFER,
+            "authenticated_transfer mismatch - wlez wrap's native leg would fail on chain"
+        );
+        assert_eq!(
+            programs::clock().id(),
+            DEPLOYED_CLOCK,
+            "clock mismatch - the clock-pinned buy/sell paths would fail on chain"
+        );
+    }
 }

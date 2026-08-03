@@ -31,10 +31,11 @@ trader, so the pool stays solvent. License: **MIT OR Apache-2.0**.
 
 ## Build & test
 
-Builds against LEZ **`v0.2.1`**, pulled straight from the published git tag - there is
-no LEZ checkout to wire up and no path-patching. (A checkout is only needed to *run* a
-local sequencer; see `run-sequencer.sh`.) See
-[`docs/UPGRADE-v0.2.1.md`](docs/UPGRADE-v0.2.1.md) for what changed from `v0.2.0-rc4`.
+Builds against LEZ **`v0.2.0`**, pulled straight from the published git tag - there is
+no LEZ checkout to wire up and no path-patching. `v0.2.0` is the version both public
+sequencers run; `v0.2.1` changes the built-in program image ids, so a `v0.2.1` build
+cannot transact against them. See
+[`docs/UPGRADE-v0.2.0.md`](docs/UPGRADE-v0.2.0.md) for the full migration record.
 
 Two things beyond `cargo` are required: **Docker** + `cargo-risczero` (only to rebuild
 the zkVM guests, whose prebuilt ELFs are committed), and **libpcsclite** (the v0.2.1
@@ -45,8 +46,7 @@ bash setup.sh                                                 # verify the toolc
 bash scripts/ci-e2e.sh                                        # full gate: unit + CLI + artifacts + e2e
 RISC0_SKIP_BUILD=1 cargo test --manifest-path cli/Cargo.toml  # CLI tests (fast)
 cd programs && RISC0_DEV_MODE=1 cargo test --workspace        # tests only - dev/fake proofs for speed; the launchpad itself defaults to real proofs
-bash run-sequencer.sh                                         # local sequencer on :3040
-bash scripts/bootstrap.sh                                     # deploy programs + fund a demo sale
+bash scripts/bootstrap.sh                                     # deploy programs + fund a demo sale (Logos testnet)
 ```
 
 The three launchpad programs are compiled to riscv32 inside a pinned container, so their

@@ -16,8 +16,8 @@ owo-colors = "4"
 lpad-sdk = { path = "../sdk" }
 bonding_curve_core = { path = "../programs/bonding_curve/core" }
 lbp_core = { path = "../programs/lbp/core" }
-token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", features = [
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", features = [
     "host",
 ] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # the CLI uses, and parse the binary's JSON output.
 bonding_curve_core = { path = "../programs/bonding_curve/core" }
 lbp_core = { path = "../programs/lbp/core" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.1", features = [
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", features = [
     "host",
 ] }
 serde_json = "1"

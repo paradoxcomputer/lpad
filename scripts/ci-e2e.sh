@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# LPAD CI gate: unit tests (no zkVM) + guest-artifact freshness + standalone E2E.
+# LPAD CI gate: unit tests (no zkVM) + guest-artifact freshness + in-process E2E.
+# No sequencer involved: step 3 drives the LEZ state machine directly.
 # Mirrors the ldex ci-e2e.sh. Run from the repo root.
 set -euo pipefail
 
@@ -24,7 +25,7 @@ echo "== 2. Guest artifacts present =="
 #
 # This replaces the old IDL drift check. IDL *generation* went away with the LEZ
 # v0.2.1 upgrade (it was a SPEL feature, and SPEL no longer exists), so
-# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.1.md.
+# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.0.md.
 for g in bonding_curve lbp wlez; do
   [ -f "$PROG/artifacts/lpad/${g}.bin" ] || \
     fail "missing artifacts/lpad/${g}.bin - run scripts/build-guests.sh"

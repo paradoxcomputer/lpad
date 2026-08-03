@@ -1,4 +1,27 @@
-# Upgrading LPAD from LEZ `v0.2.0-rc4` to `v0.2.1`
+# Upgrading LPAD from LEZ `v0.2.0-rc4` to `v0.2.0`
+
+> **Pinned at `v0.2.0`, not `v0.2.1`.** The work below was originally done
+> against `v0.2.1`, then retargeted one tag back. Reason: both sequencers lpad
+> actually uses run **v0.2.0** —
+>
+> | program | `v0.2.1` computes | deployed on both chains (`v0.2.0`) |
+> |---|---|---|
+> | `token` | `[3202377277, 3910122468, …]` | `[2282739141, 348907455, …]` |
+> | `authenticated_transfer` | `[477196038, 3380722759, …]` | `[3170810844, 2526647253, …]` |
+> | `privacy_preserving_circuit` | v0.2.1 build | `[1473414827, 2830688453, …]` |
+>
+> A `v0.2.1` build therefore cannot transact against them at all: token
+> transfers would target a program that is not there, and shielded proofs would
+> be rejected. Verified by matching the deployed `token` id against every tag's
+> committed `token.bin`.
+>
+> Everything structural in this document lands at or before `v0.2.0` (the
+> rename, the SPEL deletion, reproducible guest artifacts, `AccountIdentity`), so
+> retargeting cost only the wallet-layer deltas listed in §7. Re-read §7 with
+> that in mind: the three rows marked *v0.2.1-only* do **not** apply.
+>
+> To move to `v0.2.1` later, bump the tag, re-apply those three wallet changes,
+> rebuild the guests, and redeploy — but only once the sequencers have upgraded.
 
 This was not a version bump. Between the two tags upstream landed 691 commits
 including a whole-repo rename, the deletion of the program-authoring framework
@@ -141,23 +164,20 @@ enum discriminant. Fixed to
 | rc4 | v0.2.1 |
 |---|---|
 | `PrivacyPreservingAccount` | `AccountIdentity` (lpad's two variants keep their names) |
-| `WalletCore::new_update_chain(config, storage, overrides)` | now **async**, plus a `statistics_path` argument |
-| `wallet.sequencer_client` (field) | `wallet.helm_owned()` / `wallet.get_last_block_id()` |
+| `WalletCore::new_update_chain(config, storage, overrides)` | *v0.2.1-only:* becomes **async** + takes a `statistics_path`. On v0.2.0 it is unchanged. |
+| `wallet.sequencer_client` (field) | *v0.2.1-only:* replaced by `helm_owned()` / `get_last_block_id()`. On v0.2.0 the public field remains. |
 | `wallet.last_synced_block` (field) | `wallet.storage().last_synced_block()` |
 | `store_persistent_data()` | no longer async |
-| `get_accounts_nonces(Vec<AccountId>)` | `&[AccountId]` |
-| `poll_native_token_transfer(hash) -> Tx` | `poll_transaction(hash) -> (Tx, BlockId)` |
+| `get_accounts_nonces(Vec<AccountId>)` | *v0.2.1-only:* takes `&[AccountId]`. Still `Vec` on v0.2.0. |
+| `poll_native_token_transfer(hash) -> Tx` | *v0.2.1-only:* renamed to `poll_transaction`, returning `(Tx, BlockId)`. Unchanged on v0.2.0. |
 | `storage().user_data.*` maps | `storage().key_chain().public_account_ids()` / `private_account_ids()` |
 | `storage().labels` (id → label) | `storage().labels_for_account(AccountIdWithPrivacy)` — the map is inverted and private |
 | `WalletChainStore` | `Storage`, all fields private |
 
 Two behavioural items worth knowing:
 
-* **Startup calibration.** Opening a wallet probes every sequencer missing from
-  `statistics.json` ~100 times. Because the CLI opens a fresh wallet per command,
-  that cost would be paid on *every* invocation. `LaunchpadClient::open` now takes
-  a statistics path, `record_sequencer_statistics()` persists the samples after a
-  successful command, and `bootstrap.sh` writes a low `calibration_limit`.
+* **Startup calibration** is a v0.2.1 concern only (the multi-sequencer client
+  and `statistics.json` do not exist in v0.2.0), so lpad does not carry it.
 * **Private proving got more expensive.** `send_privacy_preserving_tx`
   unconditionally pads the private inputs to 7 notes
   (`MAX_PRIVATE_ACCOUNTS = 7`). lpad's deshield/re-shield legs have exactly one
@@ -220,3 +240,40 @@ crates, or drop them.
   (`default-features = false`, without which guests cannot cross-compile) is now
   upstream's own default.
 * Rust toolchain is unchanged at 1.94.0.
+
+---
+
+## 11. No bundled sequencer: lpad targets real networks
+
+`run-sequencer.sh` and the standalone dev-sequencer path are gone. lpad talks to
+real sequencers, selected with `--network` (or `$LPAD_NETWORK` for the scripts):
+
+| alias | sequencer |
+|---|---|
+| `testnet` (default) | `https://testnet.lez.logos.co` |
+| `paradox` | `https://seq-testnet.paradox.computer` |
+| any `http(s)://…` | passed through verbatim |
+
+`--network` is applied as a `WalletConfigOverrides`, so it changes the sequencer
+for that invocation only and never rewrites the wallet config.
+
+Consequences:
+
+* **Real proofs, always.** A real sequencer verifies, so `RISC0_DEV_MODE` cannot
+  be used against one — `bootstrap.sh` now refuses to run if it is set. Dev-mode
+  proving remains available for the in-process integration tests, which drive the
+  state machine directly and need no chain. Budget minutes per private op.
+* **No genesis control.** The hardcoded genesis funder key and `vault claim` only
+  worked on a chain we owned. Bootstrap now claims from the **pinata faucet**, or
+  uses `$LPAD_FUNDER` / `$LPAD_FUNDER_KEY` if you supply a funded account.
+* **lpad's programs are not deployed on either chain** — bootstrap deploys all
+  three, and their ids are pinned in `lpad_guests::deployed` with a drift-guard
+  test. Rebuilding the artifacts changes those ids, which orphans every existing
+  sale and pool, so treat a diff there as a consensus change.
+* The CI `e2e` job stays hermetic (in-process, dev proofs). A live smoke test is
+  opt-in via `workflow_dispatch`, since it needs a funded account and real proving.
+
+One caveat on reading the chain: the sequencer's `getProgramIds` RPC returns a
+**hardcoded five-entry list** with a `// TODO: Get programs from state`, so it is
+not a reliable inventory of what is deployed. Query a known account id instead
+(the clock account is a fixed literal, so it works across versions).

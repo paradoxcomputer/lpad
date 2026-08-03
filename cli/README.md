@@ -29,7 +29,6 @@ plus the shared collateral (`wlez`), shielding, and **Associated Token Account
 ```bash
 bash setup.sh                 # create the _lez symlink to your LEZ checkout
 bash scripts/install-cli.sh   # install `lpad` to ~/.local/bin (bakes in guest ELF paths)
-bash run-sequencer.sh         # local sequencer on 127.0.0.1:3040  (separate terminal)
 bash scripts/bootstrap.sh     # deploy programs + create the ~/.lpad wallet + a demo sale
 ```
 

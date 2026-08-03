@@ -79,8 +79,7 @@ cat <<EOF
 Setup complete. Next:
   1. cd $REPO/programs && cargo build --release       # host crates
   2. bash $REPO/scripts/build-guests.sh               # only if guest code changed
-  3. bash $REPO/run-sequencer.sh                      # dev sequencer (127.0.0.1:3040)
-  4. bash $REPO/scripts/bootstrap.sh                  # deploy + fund (another terminal)
-  5. bash $REPO/scripts/install-cli.sh                # install lpad on PATH
-  6. lpad status                                      # smoke test
+  3. bash $REPO/scripts/bootstrap.sh                  # deploy + fund on the testnet
+  4. bash $REPO/scripts/install-cli.sh                # install lpad on PATH
+  5. lpad status                                      # smoke test (against the Logos testnet)
 EOF

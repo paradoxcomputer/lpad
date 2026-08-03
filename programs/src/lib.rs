@@ -45,4 +45,66 @@ mod inner {
     pub const fn wlez() -> Program {
         Program::new_unchecked(WLEZ_ID, Cow::Borrowed(WLEZ_ELF))
     }
+
+    /// The program ids that are DEPLOYED on the Logos and Paradox testnets.
+    ///
+    /// These are pinned deliberately. Under LEZ v0.2.0-rc4 a hardcoded image id
+    /// was a bug - guests were built in-process, so the id varied with the local
+    /// risc0 toolchain and a literal would break a fresh clone (which is why
+    /// commits cf68c55/3825bab removed the ones that existed). That reasoning no
+    /// longer applies: guests are now built in a pinned container and the ELFs
+    /// are committed, so there is exactly one possible id per program.
+    ///
+    /// Their job here is to be a **drift guard**. The ids are what an lpad build
+    /// will submit against, and they are baked into on-chain state - every sale
+    /// and pool PDA is derived from them. So an accidental artifact change is a
+    /// consensus break: it orphans every existing sale and points the CLI at a
+    /// program nobody deployed. `pinned_ids_match_artifacts` below turns that into
+    /// a failing test instead of a silent production incident.
+    ///
+    /// Updating these is a deliberate act: rebuild the guests, redeploy all three
+    /// programs, and expect existing sales/pools to be unreachable.
+    pub mod deployed {
+        /// `bonding_curve.bin`, built against LEZ v0.2.0.
+        pub const BONDING_CURVE: [u32; 8] = [
+            1905707401, 533061904, 2472444737, 2302353893, 4166150027, 3390801879, 869870283,
+            1585233453,
+        ];
+        /// `lbp.bin`, built against LEZ v0.2.0.
+        pub const LBP: [u32; 8] = [
+            925027583, 1974654221, 2894767176, 1099259783, 3784388778, 1190549811, 3168599590,
+            834686242,
+        ];
+        /// `wlez.bin`, built against LEZ v0.2.0.
+        pub const WLEZ: [u32; 8] = [
+            2289652302, 844591485, 757892305, 633811090, 3177379699, 1411153150, 315511500,
+            2255764983,
+        ];
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{bonding_curve, deployed, lbp, wlez};
+
+        /// The committed artifacts must hash to the pinned ids.
+        ///
+        /// If this fails, `programs/artifacts/lpad/*.bin` changed. That is a
+        /// consensus-level change - see the note on [`deployed`]. Either restore
+        /// the artifacts, or (if the change is intended) redeploy the programs and
+        /// update the constants.
+        #[test]
+        fn pinned_ids_match_artifacts() {
+            assert_eq!(
+                bonding_curve().id(),
+                deployed::BONDING_CURVE,
+                "bonding_curve.bin no longer hashes to the deployed program id"
+            );
+            assert_eq!(lbp().id(), deployed::LBP, "lbp.bin no longer hashes to the deployed program id");
+            assert_eq!(
+                wlez().id(),
+                deployed::WLEZ,
+                "wlez.bin no longer hashes to the deployed program id"
+            );
+        }
+    }
 }

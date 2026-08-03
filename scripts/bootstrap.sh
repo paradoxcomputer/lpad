@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# Dev bootstrap for an LPAD bonding-curve end-to-end run.
+# Bootstrap an LPAD end-to-end run against a REAL LEZ sequencer.
 #
-# Brings up a usable launchpad against a running LEZ sequencer: configures a
-# wallet, funds a creator from a genesis account, mints a project + collateral
-# token (via the built-in token program the wallet uses), deploys the
-# bonding_curve program, creates a sale through `lpad`, and funds a public buyer
-# plus shielded private holdings for the private (disposable) buy. Emits
-# scripts/bootstrap.env.
+# There is no bundled local sequencer any more: lpad targets the Logos testnet or
+# the Paradox Computer testnet. Both currently run LEZ v0.2.0, which is what the
+# crates are pinned to.
+#
+# What it does: configures a wallet against the chosen network, self-funds a
+# creator from the pinata faucet (or an explicit funder key), mints a project +
+# collateral token, deploys lpad's three programs, creates a bonding-curve sale
+# and an LBP pool, and funds a public buyer plus shielded holdings for the private
+# path. Emits scripts/bootstrap.env.
+#
+# Because the chain is real, PROOFS ARE REAL - a real sequencer verifies them, so
+# RISC0_DEV_MODE is not usable here and every private op costs a full STARK
+# (minutes). Dev-mode proving only applies to the in-process integration tests.
 #
 # Env:
-#   LPAD_SEQUENCER_ADDR  default http://127.0.0.1:3040  (matches run-sequencer.sh)
-#   LPAD_WALLET_HOME     default /tmp/lpad-bootstrap/wallet
+#   LPAD_NETWORK         testnet (default) | paradox | an http(s) sequencer URL
+#   LPAD_SEQUENCER_ADDR  explicit URL; overrides LPAD_NETWORK
+#   LPAD_WALLET_HOME     default ~/.lpad
 #   LPAD_WALLET_PW       default lpaddev
-#   RISC0_DEV_MODE       set to 1 for dev (fake) proofs; must match the sequencer
+#   LPAD_FUNDER          existing funded account ("Public/..."); skips the faucet
+#   LPAD_FUNDER_KEY      private key to import for LPAD_FUNDER
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 
@@ -23,25 +32,35 @@ LPAD="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 PROG="$REPO/programs"
 HOME_DIR="${LPAD_WALLET_HOME:-$HOME/.lpad}"
 PW="${LPAD_WALLET_PW:-lpaddev}"
-SEQ_ADDR="${LPAD_SEQUENCER_ADDR:-http://127.0.0.1:3040}"
 OUT="${LPAD_BOOTSTRAP_OUT:-$REPO/scripts/bootstrap.env}"
-GENESIS_FUNDER="Public/2RHZhw9h534Zr3eq2RGhQete2Hh667foECzXPmSkGni2"
-# Key + genesis balance for GENESIS_FUNDER (LEZ Justfile: wallet-import-test-accounts).
-GENESIS_FUNDER_KEY="f434f8741720014586ae43356d2aec6257da086222f604ddb75d69733b86fc4c"
-GENESIS_FUNDER_AMOUNT="${LPAD_GENESIS_FUNDER_AMOUNT:-20000}"
+
+# Network aliases, kept in step with `lpad_sdk::Network`.
+NETWORK="${LPAD_NETWORK:-testnet}"
+case "$NETWORK" in
+  testnet|logos) SEQ_ADDR="https://testnet.lez.logos.co" ;;
+  paradox)       SEQ_ADDR="https://seq-testnet.paradox.computer" ;;
+  http://*|https://*) SEQ_ADDR="$NETWORK" ;;
+  *) echo "unknown LPAD_NETWORK '$NETWORK' - use testnet, paradox, or an http(s) URL" >&2; exit 2 ;;
+esac
+SEQ_ADDR="${LPAD_SEQUENCER_ADDR:-$SEQ_ADDR}"
+
+# Funding: the pinata program is the testnet faucet. An explicit funded account
+# takes precedence (a chain may not run pinata, or may have drained it).
+FUNDER="${LPAD_FUNDER:-}"
+FUNDER_KEY="${LPAD_FUNDER_KEY:-}"
 
 # sale parameters
 D=1000000; R=200000; VT=2000000; VC=50000; FEE_BPS=100; NONCE=0
 PROJ_SUPPLY=10000000; COLL_SUPPLY=10000000
 BUYER_FUND=100000; PRIV_FUND=50000; INIT_DUST=1
 
-SEQ_HP="${SEQ_ADDR#http://}"; SEQ_HP="${SEQ_HP#https://}"; SEQ_HP="${SEQ_HP%%/*}"
-SEQ_HOST="${SEQ_HP%%:*}"; SEQ_PORT="${SEQ_HP##*:}"
-
 [ -x "$WALLET" ] || { echo "wallet CLI not built: $WALLET" >&2; exit 1; }
 [ -x "$LPAD" ]   || { echo "lpad CLI not built: $LPAD (run: cd cli && cargo build --release)" >&2; exit 1; }
-timeout 3 bash -c "</dev/tcp/${SEQ_HOST}/${SEQ_PORT}" 2>/dev/null \
-  || { echo "sequencer not reachable at $SEQ_ADDR" >&2; exit 1; }
+# checkHealth over JSON-RPC: works for https (no explicit port) and actually
+# proves the sequencer is serving, not just that a socket is open.
+timeout 30 curl -sf -X POST "$SEQ_ADDR" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"checkHealth","params":[]}' >/dev/null \
+  || { echo "sequencer not reachable / unhealthy at $SEQ_ADDR" >&2; exit 1; }
 
 export LEE_WALLET_HOME_DIR="$HOME_DIR"
 mkdir -p "$HOME_DIR"
@@ -50,23 +69,26 @@ python3 - "$HOME_DIR/wallet_config.json" "$SEQ_ADDR" <<'PY'
 import json,sys
 p,addr=sys.argv[1],sys.argv[2]
 d=json.load(open(p))
-# v0.2.1 replaced the single `sequencer_addr` with a `sequencers` list, and added
-# a multi-sequencer client config. Keep `calibration_limit` low: on every wallet
-# open the client probes each sequencer that many times (default 100), and the
-# CLI opens a fresh wallet per command.
-d.pop("sequencer_addr", None)
+# v0.2.0 schema: one `sequencer_addr`. (The `sequencers` array + multi-sequencer
+# client only arrive in v0.2.1.) `initial_accounts` was an rc4 field.
 d.pop("initial_accounts", None)
-d["sequencers"] = [{"sequencer_addr": addr, "basic_auth": None}]
-d["seq_poll_timeout"] = "2s"
-d.setdefault("multi_sequencer_client_config", {})
-d["multi_sequencer_client_config"]["distribution_limit"] = 1
-d["multi_sequencer_client_config"]["calibration_limit"] = 3
+d["sequencer_addr"] = addr
+# Real networks make blocks slower than a local dev chain did, and a round trip
+# is a WAN hop - give polling room.
+d["seq_poll_timeout"] = "20s"
+d["seq_tx_poll_max_blocks"] = 20
+d["seq_poll_max_retries"] = 10
 json.dump(d,open(p,"w"),indent=4)
 PY
-# Record the proof mode next to the wallet so `lpad` auto-selects RISC0_DEV_MODE
-# (no env var needed at call time).
-if [ "${RISC0_DEV_MODE:-}" = "1" ]; then echo dev > "$HOME_DIR/proof_mode"; else echo real > "$HOME_DIR/proof_mode"; fi
-echo ">> sequencer: $SEQ_ADDR   wallet home: $HOME_DIR  (proof_mode=$(cat "$HOME_DIR/proof_mode"))"
+# A real sequencer verifies proofs, so dev-mode proving can never work against
+# one. Record `real` unconditionally and refuse a misleading RISC0_DEV_MODE.
+if [ "${RISC0_DEV_MODE:-}" = "1" ]; then
+  echo "✗ RISC0_DEV_MODE=1 is set, but $SEQ_ADDR is a real sequencer and verifies proofs." >&2
+  echo "  Unset it and re-run; private ops will take minutes each." >&2
+  exit 2
+fi
+echo real > "$HOME_DIR/proof_mode"
+echo ">> network: $NETWORK ($SEQ_ADDR)   wallet home: $HOME_DIR   proofs: REAL"
 
 w() { printf '%s\n' "$PW" | "$WALLET" "$@"; }
 new_pub() { w account new public 2>&1 | grep -oE 'Public/[1-9A-HJ-NP-Za-km-z]{32,44}' | head -1; }
@@ -79,21 +101,21 @@ PROJ_DEF=$(new_pub);  PROJ_HOLD=$(new_pub)
 COLL_DEF=$(new_pub);  COLL_HOLD=$(new_pub)
 TREASURY=$(new_pub);  BUYER_COLL=$(new_pub); BUYER_TOK=$(new_pub)
 
-# Since v0.2.1 a `supply_account` genesis action credits the recipient's VAULT
-# PDA rather than its own balance, and the wallet config no longer ships the
-# genesis keys. So the funder must be imported and its vault claimed before any
-# transfer - otherwise every send fails with insufficient funds.
-echo ">> importing + claiming the genesis funder vault"
-w account import public --private-key "$GENESIS_FUNDER_KEY" >&2 2>&1 || \
-  echo "   (already imported)" >&2
-w vault claim --account-id "$GENESIS_FUNDER" --amount "$GENESIS_FUNDER_AMOUNT" >&2 2>&1 || \
-  echo "   (vault claim failed - already claimed?)" >&2
-sleep 14
-
-echo ">> funding creator with native LEZ from genesis"
-w auth-transfer send --from "$GENESIS_FUNDER" --to "$CREATOR" --amount 8000 >&2 || \
-  echo "   (genesis fund failed)" >&2
-sleep 14
+# On a chain we do not own there is no genesis key to import. Either the caller
+# supplies a funded account, or we self-fund the creator from the pinata faucet.
+if [ -n "$FUNDER" ]; then
+  echo ">> funding creator from the supplied funder $FUNDER"
+  [ -n "$FUNDER_KEY" ] && { w account import public --private-key "$FUNDER_KEY" >&2 2>&1 || echo "   (already imported)" >&2; sleep 8; }
+  w auth-transfer send --from "$FUNDER" --to "$CREATOR" --amount 8000 >&2 \
+    || { echo "✗ transfer from $FUNDER failed - is it funded?" >&2; exit 1; }
+else
+  echo ">> claiming the pinata faucet into the creator (no LPAD_FUNDER given)"
+  w pinata claim --to "$CREATOR" >&2 2>&1 \
+    || { echo "✗ pinata claim failed. This chain may not run pinata, or it is drained." >&2
+         echo "  Supply a funded account instead: LPAD_FUNDER=Public/... LPAD_FUNDER_KEY=<hex>" >&2
+         exit 1; }
+fi
+sleep 20
 
 echo ">> minting PROJECT (supply $PROJ_SUPPLY) + COLLATERAL (supply $COLL_SUPPLY)"
 w token new --name PROJECT --total-supply "$PROJ_SUPPLY" \

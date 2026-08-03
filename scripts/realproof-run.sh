@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-proof (RISC0_DEV_MODE unset) verification of the private paths on LEZ v0.2.1.
+# Real-proof verification of the private paths against a real LEZ v0.2.0 sequencer.
 # Waits for the real-proof bootstrap, then runs every private buy variant with a
 # real recursive STARK and times each. Public ops carry no client proof, so they
 # are a quick sanity that the real-proof sequencer accepts our txs at all.
@@ -7,9 +7,8 @@ set -uo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 unset RISC0_DEV_MODE
-export LOGOS_BLOCKCHAIN_CIRCUITS="$HOME/.logos-blockchain-circuits"
 L=cli/target/release/lpad
-ENVF=scripts/bootstrap.v021-real.env
+ENVF=scripts/bootstrap.v020-real.env
 LOG=/tmp/lpad-realproof.log
 : > "$LOG"
 say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
@@ -21,7 +20,7 @@ for _ in $(seq 1 160); do            # up to ~40 min (bootstrap incl. 2 shield S
   sleep 15
 done
 if ! { [ -f "$ENVF" ] && grep -q LPAD_LBP_POOL_ID "$ENVF"; }; then
-  say "BOOTSTRAP DID NOT COMPLETE - last lines:"; tail -25 /tmp/lpad-v021-real-bootstrap.log | tee -a "$LOG"; exit 1
+  say "BOOTSTRAP DID NOT COMPLETE - last lines:"; tail -25 /tmp/lpad-v020-real-bootstrap.log | tee -a "$LOG"; exit 1
 fi
 # shellcheck disable=SC1090
 source "$ENVF"

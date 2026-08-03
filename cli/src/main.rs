@@ -25,6 +25,11 @@ struct Cli {
     /// Wallet storage path (default: $LEE_WALLET_HOME_DIR/storage.json).
     #[arg(long, global = true)]
     storage: Option<String>,
+    /// Sequencer to target: `testnet` (default), `paradox`, or an http(s) URL.
+    /// Overrides the wallet config for this invocation only. There is no bundled
+    /// local sequencer.
+    #[arg(long, global = true)]
+    network: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -195,8 +200,8 @@ enum LbpCmd {
 }
 
 fn main() {
-    let Cli { json, config, storage, cmd } = Cli::parse();
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone());
+    let Cli { json, config, storage, network, cmd } = Cli::parse();
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
     let result = match cmd {
         Cmd::Status => paths().and_then(|p| online::status(&p, json)),
         Cmd::Balance { account } => {
@@ -216,8 +221,8 @@ fn main() {
             let ata = match ata_program { Some(s) => parse_program(&s), None => lpad_sdk::ata_program_id() };
             ata.and_then(|ata| parse_account(&token_def).and_then(|d| paths().and_then(|p| online::create_ata(&p, ata, owner, d, json))))
         }
-        Cmd::Bc(c) => run_bc(c, json, &config, &storage),
-        Cmd::Lbp(c) => run_lbp(c, json, &config, &storage),
+        Cmd::Bc(c) => run_bc(c, json, &config, &storage, &network),
+        Cmd::Lbp(c) => run_lbp(c, json, &config, &storage, &network),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -256,9 +261,9 @@ fn check_vc_domain(vc: u128) -> Result<(), String> {
     Ok(())
 }
 
-fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<String>) -> Result<(), String> {
+fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<String>, network: &Option<String>) -> Result<(), String> {
     use bonding_curve_core as bc;
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone());
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
     // --program is optional: default to the bonding-curve guest's image id.
     let prog_id = |p: Option<String>| match p {
         Some(s) => parse_program(&s),
@@ -398,9 +403,9 @@ fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<Stri
     Ok(())
 }
 
-fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<String>) -> Result<(), String> {
+fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<String>, network: &Option<String>) -> Result<(), String> {
     use lbp_core as lbp;
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone());
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
     // --program is optional: default to the LBP guest's image id.
     let prog_id = |p: Option<String>| match p {
         Some(s) => parse_program(&s),

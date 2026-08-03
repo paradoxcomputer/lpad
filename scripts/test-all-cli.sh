@@ -4,13 +4,12 @@
 # emitting the env file below. Run: bash scripts/test-all-cli.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.v021.env}"
+ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.v020.env}"
 # shellcheck disable=SC1090
 source "$ENVFILE"
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
-export LOGOS_BLOCKCHAIN_CIRCUITS="${LOGOS_BLOCKCHAIN_CIRCUITS:-$HOME/.logos-blockchain-circuits}"
 # Default to REAL proofs (RISC0_DEV_MODE=0) to match how the launchpad runs;
-# set RISC0_DEV_MODE=1 for a fast dev/fake-proof pass against a dev sequencer.
+# dev/fake proofs are NOT usable against a real sequencer - it verifies them.
 export RISC0_DEV_MODE="${RISC0_DEV_MODE:-0}"
 L="$REPO/cli/target/release/lpad"
 

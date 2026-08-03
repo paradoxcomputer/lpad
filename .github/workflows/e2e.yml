@@ -1,11 +1,23 @@
 name: e2e (self-hosted)
 
-# Full unit + IDL-drift + standalone E2E, then nightly real proofs. Requires a
-# self-hosted runner labelled [self-hosted, lez] that has the LEZ source + the
-# risc0 toolchain. Register one for this repo to enable; the public `ci`
-# workflow (core math tests) gates PRs in the meantime.
+# Full unit + guest-artifact + in-process E2E, plus an optional live smoke test
+# against a real sequencer. Requires a self-hosted runner labelled
+# [self-hosted, lez] with the risc0 toolchain (and Docker, to rebuild guests).
+# Register one for this repo to enable; the public `ci` workflow (core math +
+# program tests) gates PRs in the meantime.
+#
+# There is no local sequencer to start any more - lpad targets the Logos and
+# Paradox testnets. The `e2e` job drives the LEZ state machine in-process with no
+# network, so it stays hermetic and can use dev proofs. Anything that actually
+# touches a chain needs real proofs and a funded account, which is why the live
+# job is opt-in and never on the PR path.
 on:
   workflow_dispatch:
+    inputs:
+      live_network:
+        description: 'Live smoke test against this network (testnet|paradox|URL). Blank = skip.'
+        required: false
+        default: ''
   schedule:
     - cron: '0 4 * * *'
 
@@ -15,18 +27,37 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: setup _lez symlink
+      - name: verify toolchain
         run: bash setup.sh
-      - name: unit + IDL drift + standalone E2E (dev proofs)
+      - name: unit + guest artifacts + in-process E2E (dev proofs)
         run: bash scripts/ci-e2e.sh
 
-  nightly-real-proof:
-    if: github.event_name == 'schedule'
+  # Reproducibility gate: rebuilding the committed guests must not change a byte,
+  # because their image ids ARE the deployed program ids.
+  guest-reproducibility:
+    runs-on: [self-hosted, lez]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: rebuild guests and assert the artifacts are unchanged
+        env:
+          LPAD_VERIFY_GUESTS: '1'
+        run: bash scripts/ci-e2e.sh
+
+  # Opt-in only: needs a funded account on the target network and real proving
+  # (minutes per private op).
+  live-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.live_network != ''
     runs-on: [self-hosted, lez]
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - name: setup _lez symlink
-        run: bash setup.sh
-      - name: e2e with real proofs
-        run: RISC0_DEV_MODE= bash scripts/ci-e2e.sh
+      - name: live smoke test against ${{ inputs.live_network }}
+        env:
+          LPAD_NETWORK: ${{ inputs.live_network }}
+          LPAD_FUNDER: ${{ secrets.LPAD_FUNDER }}
+          LPAD_FUNDER_KEY: ${{ secrets.LPAD_FUNDER_KEY }}
+        run: |
+          (cd cli && cargo build --release --bin lpad)
+          bash scripts/bootstrap.sh
+          bash scripts/test-all-cli.sh
