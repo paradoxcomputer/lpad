@@ -58,6 +58,17 @@ into the SDK at compile time. Rebuild them only when guest-visible code changes:
 bash scripts/build-guests.sh    # needs Docker; a changed .bin means a redeploy
 ```
 
+The three workspaces (`programs/`, `sdk/`, `cli/`) each compile the full LEZ +
+risc0 dependency tree, so build caches get large - tens of GB after a version
+bump. Reclaim with:
+
+```bash
+bash scripts/clean.sh           # --dry-run to see the total first
+```
+
+It touches only regenerable output; `~/.cargo` is left alone, so a rebuild
+recompiles but downloads nothing.
+
 ## Run the CLI
 
 Install `lpad` to `~/.local/bin`:
