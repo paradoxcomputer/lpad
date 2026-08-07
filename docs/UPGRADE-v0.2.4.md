@@ -314,3 +314,51 @@ Verified empirically: the full 21-test integration suite passes against the real
 v0.2.4 state machine both with the filter neutralised and with it removed. `wlez`
 had no other dispatch helpers, so its `dispatch.rs` is gone entirely; the
 bonding-curve and LBP modules keep their clock helpers.
+
+---
+
+## 13. Deploying to a real network: what actually bites
+
+Learned while deploying to the Logos and Paradox testnets on v0.2.4.
+
+**Program deployment needs no signer and no funding.** The deploy transaction
+carries only bytecode - no nonce, no witness set. Two consequences: a fresh
+unfunded wallet can deploy, and because the transaction is a pure function of the
+bytecode, its **hash is deterministic**, so re-deploying identical bytecode is
+idempotent - the wallet returns the original hash and reports the original block.
+Re-running bootstrap against an already-deployed chain is therefore safe.
+
+**Receiving requires initialisation, twice over.** Both of these are rejected for
+an uninitialised recipient:
+
+  * a native transfer or a pinata claim - fix with
+    `wallet auth-transfer init --account-id <acct>`
+  * a **token** transfer - the token program claims the recipient with
+    `Claim::Authorized`, which the runtime grants only for an account the
+    transaction signed for, and the wallet does not co-sign transfer recipients
+
+The LEZ wallet has an `auth-transfer init` but no token-account equivalent, which
+is why lpad added `lpad init-holding --token-def <D>` (creates *and* initialises a
+holding, prints its id). Initialising the creator under authenticated-transfer is
+also what keeps it clear of `validate_execution` rule 7, since it sets
+`program_owner` away from `DEFAULT`.
+
+**A rejected transaction looks like a timeout.** A transaction the sequencer drops
+never appears on chain, and the wallet reports only `Error: All pollers failed`.
+To tell rejection from slowness, query `getTransaction` for the hash a few blocks
+later - absent means rejected, and no amount of extra patience will help.
+
+**Block time is ~46-50s on both public testnets**, not the 15s a local dev chain
+used. Two knock-on effects:
+
+  * fixed `sleep`s tuned for a dev chain are shorter than one block, so dependent
+    steps read pre-transaction state. `bootstrap.sh` now waits on real height
+    (`wait_block`) instead.
+  * the wallet's poll budget is `seq_poll_max_retries x seq_poll_timeout`. The
+    defaults this repo used (10 x 20s) gave only ~4 blocks of patience, which is
+    what made rejections look like timeouts. Use something like 60 x 30s.
+
+**Real sequencers verify proofs**, so `RISC0_DEV_MODE` is unusable against them -
+every private operation is a full STARK (minutes). `bootstrap.sh` refuses to run
+with it set. Dev-mode proving remains available only for the in-process
+integration tests.
