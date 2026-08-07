@@ -8,7 +8,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 unset RISC0_DEV_MODE
 L=cli/target/release/lpad
-ENVF=scripts/bootstrap.v020-real.env
+ENVF="${LPAD_TEST_ENV:-scripts/bootstrap.env}"
 LOG=/tmp/lpad-realproof.log
 : > "$LOG"
 say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
