@@ -1,0 +1,645 @@
+{
+  "schema": "lpad-abi/1",
+  "generated": "2026-08-07T16:44:21Z",
+  "generated_by": "scripts/build-abi.sh (derived from source)",
+  "lez_version": "v0.2.4",
+  "name": "lbp",
+  "description": "RFP-016 Balancer weight-shifting liquidity bootstrapping pool.",
+  "program_id": "bf027b7009aeeb3d0c04b96b08425660b35ac42089ee963ff492ffc272b6bc9b",
+  "program_id_words": [
+    1887109823,
+    1038855689,
+    1807287308,
+    1616265736,
+    549739187,
+    1066856073,
+    3271529204,
+    2612835954
+  ],
+  "instruction_type": "lbp_core::Instruction",
+  "networks": {
+    "testnet": "https://testnet.lez.logos.co",
+    "paradox": "https://seq-testnet.paradox.computer"
+  },
+  "encoding": {
+    "instruction_data": "Vec<u32>",
+    "codec": "risc0 word-oriented serde (risc0_zkvm::serde), NOT borsh",
+    "notes": [
+      "The instruction is encoded as its DECLARATION INDEX (see `discriminant`) as one u32 word, followed by its args in order.",
+      "A u128 arg occupies 4 little-endian u32 words; u64 occupies 2; bool/u8/u32 occupy 1.",
+      "AccountId and ProgramId are 32 bytes = 8 u32 words.",
+      "Vec<T> is encoded as a u32 length followed by the elements.",
+      "`accounts` gives NAME and ORDER only, taken from the guest dispatcher. The order IS the ABI: it must match message.account_ids exactly. Mutability/signer flags are deliberately absent rather than guessed - the SPEL-era IDLs never populated them, so every flag read `false` even for real signers like `creator`.",
+      "Account DATA (SaleState, PoolState, TokenHolding, ...) is borsh, NOT risc0 serde. Do not use one codec for both.",
+      "Account ids are [u32;8] little-endian words in getAccount/getProgramIds responses, and base58 with a Public/ or Private/ prefix in CLI and wallet output."
+    ]
+  },
+  "instructions": [
+    {
+      "name": "create_sale",
+      "variant": "CreateSale",
+      "discriminant": 0,
+      "docs": [],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "token_vault"
+        },
+        {
+          "index": 2,
+          "name": "collateral_vault"
+        },
+        {
+          "index": 3,
+          "name": "creator_token_holding"
+        },
+        {
+          "index": 4,
+          "name": "creator_collateral_holding"
+        },
+        {
+          "index": 5,
+          "name": "creator"
+        },
+        {
+          "index": 6,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "collateral_definition_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "treasury_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "token_name",
+          "type": "String"
+        },
+        {
+          "name": "token_symbol",
+          "type": "String"
+        },
+        {
+          "name": "token_deposit",
+          "type": "u128"
+        },
+        {
+          "name": "collateral_seed",
+          "type": "u128"
+        },
+        {
+          "name": "w_start_q64",
+          "type": "u128"
+        },
+        {
+          "name": "w_end_q64",
+          "type": "u128"
+        },
+        {
+          "name": "t_start_ms",
+          "type": "u64"
+        },
+        {
+          "name": "t_end_ms",
+          "type": "u64"
+        },
+        {
+          "name": "fee_bps",
+          "type": "u128"
+        },
+        {
+          "name": "block_token_ceiling",
+          "type": "u128"
+        },
+        {
+          "name": "allowlist_root",
+          "type": "[u8; 32]"
+        },
+        {
+          "name": "fixed_price",
+          "type": "bool"
+        },
+        {
+          "name": "min_duration_ms",
+          "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "ProgramId"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "buy",
+      "variant": "Buy",
+      "discriminant": 1,
+      "docs": [
+        "Public buy (keypair holdings), priced at the on-chain clock time."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "token_vault"
+        },
+        {
+          "index": 2,
+          "name": "collateral_vault"
+        },
+        {
+          "index": 3,
+          "name": "buyer_collateral_holding"
+        },
+        {
+          "index": 4,
+          "name": "buyer_token_holding"
+        },
+        {
+          "index": 5,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u128"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "buy_gated",
+      "variant": "BuyGated",
+      "discriminant": 2,
+      "docs": [
+        "Public buy gated by a ZK/Merkle allowlist inclusion proof."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "token_vault"
+        },
+        {
+          "index": 2,
+          "name": "collateral_vault"
+        },
+        {
+          "index": 3,
+          "name": "buyer_collateral_holding"
+        },
+        {
+          "index": 4,
+          "name": "buyer_token_holding"
+        },
+        {
+          "index": 5,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u128"
+        },
+        {
+          "name": "leaf",
+          "type": "[u8; 32]"
+        },
+        {
+          "name": "proof",
+          "type": "Vec<[u8; 32]>"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "buy_ata",
+      "variant": "BuyAta",
+      "discriminant": 3,
+      "docs": [
+        "Public buy where the user side uses **Associated Token Accounts** (RFP-016",
+        "Func #9 - ATAs for all token interactions, per LP-0014 / RFP-008). The",
+        "buyer's collateral leg is dispatched through the ATA program; tokens are",
+        "delivered into the buyer's token ATA. `ata_program_id` is required to",
+        "dispatch the chained `ata::Transfer` (the ATA's `program_owner` is the",
+        "token program, so the dispatch target cannot be read from it)."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "token_vault"
+        },
+        {
+          "index": 2,
+          "name": "collateral_vault"
+        },
+        {
+          "index": 3,
+          "name": "owner"
+        },
+        {
+          "index": 4,
+          "name": "buyer_collateral_ata"
+        },
+        {
+          "index": 5,
+          "name": "buyer_token_ata"
+        },
+        {
+          "index": 6,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u128"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "ProgramId"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "poke",
+      "variant": "Poke",
+      "discriminant": 4,
+      "docs": [
+        "Advance the stored weight for off-chain consumers (idempotent; pricing is lazy)."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "pause",
+      "variant": "Pause",
+      "discriminant": 5,
+      "docs": [
+        "Emergency stop (creator). Does NOT halt weight progression."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "creator"
+        }
+      ],
+      "args": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "resume",
+      "variant": "Resume",
+      "discriminant": 6,
+      "docs": [],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "creator"
+        }
+      ],
+      "args": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "close_sale",
+      "variant": "CloseSale",
+      "discriminant": 7,
+      "docs": [
+        "Close after the end timestamp."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "creator"
+        },
+        {
+          "index": 2,
+          "name": "clock"
+        }
+      ],
+      "args": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "variant": "Withdraw",
+      "discriminant": 8,
+      "docs": [
+        "Creator withdrawal: collateral net of the at-close fee + unsold tokens."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "pool"
+        },
+        {
+          "index": 1,
+          "name": "token_vault"
+        },
+        {
+          "index": 2,
+          "name": "collateral_vault"
+        },
+        {
+          "index": 3,
+          "name": "treasury"
+        },
+        {
+          "index": 4,
+          "name": "creator_collateral_holding"
+        },
+        {
+          "index": 5,
+          "name": "creator_token_holding"
+        },
+        {
+          "index": 6,
+          "name": "creator"
+        }
+      ],
+      "args": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "account_types": [
+    {
+      "name": "ClockData",
+      "kind": "struct",
+      "docs": [
+        "Local mirror of the sequencer `ClockAccountData` (Borsh: u64 block id, i64 ms)."
+      ],
+      "fields": [
+        {
+          "name": "block_id",
+          "type": "u64"
+        },
+        {
+          "name": "timestamp",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "SaleStatus",
+      "kind": "enum",
+      "docs": [],
+      "variants": [
+        {
+          "name": "Open",
+          "discriminant": 0
+        },
+        {
+          "name": "Closed",
+          "discriminant": 1
+        }
+      ],
+      "note": "borsh encodes the variant index as a u8"
+    },
+    {
+      "name": "PriceObservation",
+      "kind": "struct",
+      "docs": [],
+      "fields": [
+        {
+          "name": "ts_ms",
+          "type": "u64"
+        },
+        {
+          "name": "price_q64",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "PoolState",
+      "kind": "struct",
+      "docs": [],
+      "fields": [
+        {
+          "name": "creator",
+          "type": "AccountId"
+        },
+        {
+          "name": "token_definition_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "token_vault_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "collateral_vault_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "treasury_id",
+          "type": "AccountId"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "ProgramId"
+        },
+        {
+          "name": "fee_bps",
+          "type": "u128"
+        },
+        {
+          "name": "w_start_q64",
+          "type": "u128"
+        },
+        {
+          "name": "w_end_q64",
+          "type": "u128"
+        },
+        {
+          "name": "t_start_ms",
+          "type": "u64"
+        },
+        {
+          "name": "t_end_ms",
+          "type": "u64"
+        },
+        {
+          "name": "min_duration_ms",
+          "type": "u64"
+        },
+        {
+          "name": "reserve_token",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_collateral",
+          "type": "u128"
+        },
+        {
+          "name": "stored_w_token_q64",
+          "type": "u128"
+        },
+        {
+          "name": "stored_w_ts_ms",
+          "type": "u64"
+        },
+        {
+          "name": "paused",
+          "type": "bool"
+        },
+        {
+          "name": "block_token_ceiling",
+          "type": "u128"
+        },
+        {
+          "name": "block_sold",
+          "type": "u128"
+        },
+        {
+          "name": "block_window_id",
+          "type": "u64"
+        },
+        {
+          "name": "allowlist_root",
+          "type": "[u8; 32]"
+        },
+        {
+          "name": "fixed_price",
+          "type": "bool"
+        },
+        {
+          "name": "fixed_price_q64",
+          "type": "u128"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "created_ts_ms",
+          "type": "i64"
+        },
+        {
+          "name": "status",
+          "type": "SaleStatus"
+        },
+        {
+          "name": "cum_collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "cum_tokens_out",
+          "type": "u128"
+        },
+        {
+          "name": "buy_count",
+          "type": "u64"
+        },
+        {
+          "name": "obs",
+          "type": "Vec<PriceObservation>"
+        },
+        {
+          "name": "token_name",
+          "type": "String"
+        },
+        {
+          "name": "token_symbol",
+          "type": "String"
+        }
+      ]
+    }
+  ]
+}

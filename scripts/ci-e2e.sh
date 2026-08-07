@@ -23,9 +23,8 @@ echo "== 2. Guest artifacts present =="
 # The committed ELFs under artifacts/lpad/ ARE the deployed programs: their RISC0
 # image ids are the on-chain program ids, baked into the SDK at compile time.
 #
-# This replaces the old IDL drift check. IDL *generation* went away with the LEZ
-# v0.2.1 upgrade (it was a SPEL feature, and SPEL no longer exists), so
-# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.4.md.
+# The per-program ABIs are generated from source by scripts/build-abi.sh, so a
+# stale one means the committed JSON no longer matches the programs.
 for g in bonding_curve lbp wlez; do
   [ -f "$PROG/artifacts/lpad/${g}.bin" ] || \
     fail "missing artifacts/lpad/${g}.bin - run scripts/build-guests.sh"

@@ -1,0 +1,206 @@
+{
+  "schema": "lpad-abi/1",
+  "generated": "2026-08-07T16:44:21Z",
+  "generated_by": "scripts/build-abi.sh (derived from source)",
+  "lez_version": "v0.2.4",
+  "name": "wlez",
+  "description": "Wraps the native LEZ balance into a token, so it can be used as curve/pool collateral.",
+  "program_id": "cce98686cad26bfc7c1e53a8eb99c856939985a9bbb9d030052cbaf9588e0227",
+  "program_id_words": [
+    2256988620,
+    4234924746,
+    2824019580,
+    1455987179,
+    2844105107,
+    818985403,
+    4189727749,
+    654478936
+  ],
+  "instruction_type": "wlez_core::Instruction",
+  "networks": {
+    "testnet": "https://testnet.lez.logos.co",
+    "paradox": "https://seq-testnet.paradox.computer"
+  },
+  "encoding": {
+    "instruction_data": "Vec<u32>",
+    "codec": "risc0 word-oriented serde (risc0_zkvm::serde), NOT borsh",
+    "notes": [
+      "The instruction is encoded as its DECLARATION INDEX (see `discriminant`) as one u32 word, followed by its args in order.",
+      "A u128 arg occupies 4 little-endian u32 words; u64 occupies 2; bool/u8/u32 occupy 1.",
+      "AccountId and ProgramId are 32 bytes = 8 u32 words.",
+      "Vec<T> is encoded as a u32 length followed by the elements.",
+      "`accounts` gives NAME and ORDER only, taken from the guest dispatcher. The order IS the ABI: it must match message.account_ids exactly. Mutability/signer flags are deliberately absent rather than guessed - the SPEL-era IDLs never populated them, so every flag read `false` even for real signers like `creator`.",
+      "Account DATA (SaleState, PoolState, TokenHolding, ...) is borsh, NOT risc0 serde. Do not use one codec for both.",
+      "Account ids are [u32;8] little-endian words in getAccount/getProgramIds responses, and base58 with a Public/ or Private/ prefix in CLI and wallet output."
+    ]
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "variant": "Initialize",
+      "discriminant": 0,
+      "docs": [
+        "One-shot setup at program-deployment time. Claims the vault",
+        "PDA + creates the WLEZ token definition (chained",
+        "`token::NewDefinition` with `wlez_program` as the authority via",
+        "PDA seed). Idempotent: if the vault/definition are already",
+        "initialised, returns a no-op echo of their post-states.",
+        "",
+        "Required accounts (5), in order:",
+        "  0. `vault` (PDA, default or already-claimed)",
+        "  1. `definition` - WLEZ definition (PDA, default or already-initialised)",
+        "  2. `init_holding` - the holding `token::NewFungibleDefinition` requires",
+        "     for the initial supply (0 for WLEZ; untouched afterwards)",
+        "  3. `reference_token_def` - a reference token-program definition. Its",
+        "    `program_owner` must equal `token_program_id` (the caller-",
+        "    pinned canonical token program); this is the program the",
+        "    WLEZ definition will be created under. Pinning the expected",
+        "     id prevents a malicious reference definition from redirecting",
+        "     the WLEZ definition's owning program at bootstrap.",
+        "  4. `payer` - signs the setup transaction.",
+        "",
+        "`native_program_id` is the canonical native/authenticated-transfer",
+        "program; Initialize records it in the vault's `data` so that every",
+        "later `Wrap` can pin the native-transfer leg to it (a submitter who",
+        "supplied a no-op native program owning their `user_native` could",
+        "otherwise skip the real escrow and mint unbacked WLEZ). Like",
+        "`token_program_id`, it is trusted at bootstrap (the deployer pins",
+        "it); the runtime defence is the per-Wrap check against this stored id."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "vault"
+        },
+        {
+          "index": 1,
+          "name": "definition"
+        },
+        {
+          "index": 2,
+          "name": "init_holding"
+        },
+        {
+          "index": 3,
+          "name": "reference_token_def"
+        },
+        {
+          "index": 4,
+          "name": "payer"
+        }
+      ],
+      "args": [
+        {
+          "name": "token_program_id",
+          "type": "ProgramId"
+        },
+        {
+          "name": "native_program_id",
+          "type": "ProgramId"
+        }
+      ]
+    },
+    {
+      "name": "wrap",
+      "variant": "Wrap",
+      "discriminant": 1,
+      "docs": [
+        "Lock `amount` native LEZ into the vault, mint `amount` WLEZ to",
+        "the user's holding.",
+        "",
+        "Required accounts (4), in order:",
+        "  0. `user_native` - the user's keypair public account (signs)",
+        "  1. `vault` - the WLEZ vault PDA",
+        "  2. `definition` - the WLEZ token definition PDA. Mint",
+        "     authority is set to this program via `with_pda_seeds` on",
+        "     the chained Mint.",
+        "  3. `user_holding` - the user's WLEZ token holding. Must",
+        "     already be initialised for the WLEZ def."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "user_native"
+        },
+        {
+          "index": 1,
+          "name": "vault"
+        },
+        {
+          "index": 2,
+          "name": "definition"
+        },
+        {
+          "index": 3,
+          "name": "user_holding"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "unwrap",
+      "variant": "Unwrap",
+      "discriminant": 2,
+      "docs": [
+        "Burn `amount` WLEZ from the user's holding, release `amount`",
+        "native LEZ from the vault back to the user.",
+        "",
+        "Required accounts (4), in order:",
+        "  0. `user_holding` - the user's WLEZ token holding. Signs the",
+        "     burn via the user's tx authority.",
+        "  1. `definition` - the WLEZ token definition.",
+        "  2. `vault` - the WLEZ vault PDA. Authorised in the chained",
+        "     native transfer via `with_pda_seeds`.",
+        "  3. `user_native` - the destination native account."
+      ],
+      "accounts": [
+        {
+          "index": 0,
+          "name": "user_holding"
+        },
+        {
+          "index": 1,
+          "name": "definition"
+        },
+        {
+          "index": 2,
+          "name": "vault"
+        },
+        {
+          "index": 3,
+          "name": "user_native"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    }
+  ],
+  "account_types": [
+    {
+      "name": "VaultData",
+      "kind": "raw",
+      "docs": [
+        "The WLEZ vault account's `data`: the canonical native (authenticated-transfer) program id.",
+        "NOT borsh - 32 raw little-endian bytes, i.e. the 8 u32 words of a ProgramId.",
+        "Written once at Initialize (wlez_core::encode_program_id) and read by every Wrap (decode_program_id)."
+      ],
+      "layout": [
+        {
+          "offset": 0,
+          "size": 32,
+          "name": "native_program_id",
+          "type": "ProgramId"
+        }
+      ]
+    }
+  ]
+}
