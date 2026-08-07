@@ -1,94 +1,23 @@
 {
-  "schema": "lpad-abi/1",
-  "generated": "2026-08-07T16:44:21Z",
-  "generated_by": "scripts/build-abi.sh (derived from source)",
-  "lez_version": "v0.2.4",
-  "name": "bonding_curve",
-  "description": "RFP-015 constant-product bonding curve over virtual reserves.",
-  "program_id": "56acf09871bfeb40220d95b8263aa9d68f2615987517b742587148178c081522",
-  "program_id_words": [
-    2565909590,
-    1089191793,
-    3096775970,
-    3601414694,
-    2551522959,
-    1119295349,
-    390623576,
-    571803788
-  ],
-  "instruction_type": "bonding_curve_core::Instruction",
-  "networks": {
-    "testnet": "https://testnet.lez.logos.co",
-    "paradox": "https://seq-testnet.paradox.computer"
-  },
-  "encoding": {
-    "instruction_data": "Vec<u32>",
-    "codec": "risc0 word-oriented serde (risc0_zkvm::serde), NOT borsh",
-    "notes": [
-      "The instruction is encoded as its DECLARATION INDEX (see `discriminant`) as one u32 word, followed by its args in order.",
-      "A u128 arg occupies 4 little-endian u32 words; u64 occupies 2; bool/u8/u32 occupy 1.",
-      "AccountId and ProgramId are 32 bytes = 8 u32 words.",
-      "Vec<T> is encoded as a u32 length followed by the elements.",
-      "`accounts` gives NAME and ORDER only, taken from the guest dispatcher. The order IS the ABI: it must match message.account_ids exactly. Mutability/signer flags are deliberately absent rather than guessed - the SPEL-era IDLs never populated them, so every flag read `false` even for real signers like `creator`.",
-      "Account DATA (SaleState, PoolState, TokenHolding, ...) is borsh, NOT risc0 serde. Do not use one codec for both.",
-      "Account ids are [u32;8] little-endian words in getAccount/getProgramIds responses, and base58 with a Public/ or Private/ prefix in CLI and wallet output."
-    ]
-  },
-  "instructions": [
+  "enum": [
     {
-      "name": "create_sale",
-      "variant": "CreateSale",
-      "discriminant": 0,
-      "docs": [
-        "Create a new sale. Transfers `D + R` project tokens from the creator into",
-        "the token vault. No real collateral is deposited."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "collateral_definition"
-        },
-        {
-          "index": 4,
-          "name": "creator_token_holding"
-        },
-        {
-          "index": 5,
-          "name": "creator"
-        },
-        {
-          "index": 6,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "CreateSale",
+      "fields": [
         {
           "name": "collateral_definition_id",
-          "type": "AccountId"
+          "type": "string"
         },
         {
           "name": "treasury_id",
-          "type": "AccountId"
+          "type": "string"
         },
         {
           "name": "token_name",
-          "type": "String"
+          "type": "string"
         },
         {
           "name": "token_symbol",
-          "type": "String"
+          "type": "string"
         },
         {
           "name": "sale_quantity",
@@ -128,7 +57,12 @@
         },
         {
           "name": "ata_program_id",
-          "type": "ProgramId"
+          "type": {
+            "array": [
+              "u32",
+              8
+            ]
+          }
         },
         {
           "name": "deadline",
@@ -137,43 +71,8 @@
       ]
     },
     {
-      "name": "buy",
-      "variant": "Buy",
-      "discriminant": 1,
-      "docs": [
-        "Public buy with keypair token holdings."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "treasury"
-        },
-        {
-          "index": 4,
-          "name": "buyer_collateral_holding"
-        },
-        {
-          "index": 5,
-          "name": "buyer_token_holding"
-        },
-        {
-          "index": 6,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "Buy",
+      "fields": [
         {
           "name": "collateral_in",
           "type": "u128"
@@ -189,53 +88,8 @@
       ]
     },
     {
-      "name": "buy_ata",
-      "variant": "BuyAta",
-      "discriminant": 2,
-      "docs": [
-        "Public buy where the user side uses **Associated Token Accounts** (RFP-015",
-        "Func #7 - ATAs for all token interactions, per LP-0014 / RFP-008). The",
-        "buyer's collateral leg is dispatched through the ATA program (which chains",
-        "the token::Transfer from the ATA-PDA), and tokens are delivered into the",
-        "buyer's token ATA. `ata_program_id` is required to dispatch the chained",
-        "`ata::Transfer` (it cannot be read from the ATA's `program_owner`, which is",
-        "the token program - the ATA program holds PDA authority, not storage)."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "treasury"
-        },
-        {
-          "index": 4,
-          "name": "owner"
-        },
-        {
-          "index": 5,
-          "name": "buyer_collateral_ata"
-        },
-        {
-          "index": 6,
-          "name": "buyer_token_ata"
-        },
-        {
-          "index": 7,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "BuyAta",
+      "fields": [
         {
           "name": "collateral_in",
           "type": "u128"
@@ -246,7 +100,12 @@
         },
         {
           "name": "ata_program_id",
-          "type": "ProgramId"
+          "type": {
+            "array": [
+              "u32",
+              8
+            ]
+          }
         },
         {
           "name": "deadline",
@@ -255,43 +114,8 @@
       ]
     },
     {
-      "name": "sell",
-      "variant": "Sell",
-      "discriminant": 3,
-      "docs": [
-        "Public sell back into the curve (reverts if `one_directional`)."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "treasury"
-        },
-        {
-          "index": 4,
-          "name": "seller_token_holding"
-        },
-        {
-          "index": 5,
-          "name": "seller_collateral_holding"
-        },
-        {
-          "index": 6,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "Sell",
+      "fields": [
         {
           "name": "tokens_in",
           "type": "u128"
@@ -307,47 +131,8 @@
       ]
     },
     {
-      "name": "sell_ata",
-      "variant": "SellAta",
-      "discriminant": 4,
-      "docs": [
-        "Public sell where the user side uses ATAs (symmetric to [`BuyAta`])."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "treasury"
-        },
-        {
-          "index": 4,
-          "name": "owner"
-        },
-        {
-          "index": 5,
-          "name": "seller_token_ata"
-        },
-        {
-          "index": 6,
-          "name": "seller_collateral_ata"
-        },
-        {
-          "index": 7,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "SellAta",
+      "fields": [
         {
           "name": "tokens_in",
           "type": "u128"
@@ -358,7 +143,12 @@
         },
         {
           "name": "ata_program_id",
-          "type": "ProgramId"
+          "type": {
+            "array": [
+              "u32",
+              8
+            ]
+          }
         },
         {
           "name": "deadline",
@@ -367,27 +157,8 @@
       ]
     },
     {
-      "name": "close_sale",
-      "variant": "CloseSale",
-      "discriminant": 5,
-      "docs": [
-        "Manual close (creator) once the end timestamp has passed."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "creator"
-        },
-        {
-          "index": 2,
-          "name": "clock"
-        }
-      ],
-      "args": [
+      "name": "CloseSale",
+      "fields": [
         {
           "name": "deadline",
           "type": "u64"
@@ -395,225 +166,11 @@
       ]
     },
     {
-      "name": "withdraw",
-      "variant": "Withdraw",
-      "discriminant": 6,
-      "docs": [
-        "Creator withdrawal of raised collateral + unused DEX seed reserve."
-      ],
-      "accounts": [
-        {
-          "index": 0,
-          "name": "sale"
-        },
-        {
-          "index": 1,
-          "name": "token_vault"
-        },
-        {
-          "index": 2,
-          "name": "collateral_vault"
-        },
-        {
-          "index": 3,
-          "name": "creator_collateral_holding"
-        },
-        {
-          "index": 4,
-          "name": "creator_token_holding"
-        },
-        {
-          "index": 5,
-          "name": "creator"
-        }
-      ],
-      "args": [
+      "name": "Withdraw",
+      "fields": [
         {
           "name": "deadline",
           "type": "u64"
-        }
-      ]
-    }
-  ],
-  "account_types": [
-    {
-      "name": "ClockData",
-      "kind": "struct",
-      "docs": [
-        "Local mirror of the sequencer `ClockAccountData`: identical Borsh layout",
-        "(`u64` block id then ms timestamp; read as `i64` like the ldex AMM)."
-      ],
-      "fields": [
-        {
-          "name": "block_id",
-          "type": "u64"
-        },
-        {
-          "name": "timestamp",
-          "type": "i64"
-        }
-      ]
-    },
-    {
-      "name": "SaleStatus",
-      "kind": "enum",
-      "docs": [
-        "Lifecycle status of a sale."
-      ],
-      "variants": [
-        {
-          "name": "Open",
-          "discriminant": 0
-        },
-        {
-          "name": "Closed",
-          "discriminant": 1
-        }
-      ],
-      "note": "borsh encodes the variant index as a u8"
-    },
-    {
-      "name": "SupplyObservation",
-      "kind": "struct",
-      "docs": [
-        "One on-chain analytics observation. `spot_price_q64` is the Q64.64 spot",
-        "price (collateral per token) sampled at `ts_ms`."
-      ],
-      "fields": [
-        {
-          "name": "ts_ms",
-          "type": "u64"
-        },
-        {
-          "name": "sale_reserve",
-          "type": "u128"
-        },
-        {
-          "name": "spot_price_q64",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "SaleState",
-      "kind": "struct",
-      "docs": [
-        "Full on-chain state of a bonding-curve sale. Public by design (RFP-015",
-        "Privacy Architecture): any participant can verify `tokens_out` against the",
-        "formula independently."
-      ],
-      "fields": [
-        {
-          "name": "creator",
-          "type": "AccountId"
-        },
-        {
-          "name": "token_definition_id",
-          "type": "AccountId"
-        },
-        {
-          "name": "collateral_definition_id",
-          "type": "AccountId"
-        },
-        {
-          "name": "token_vault_id",
-          "type": "AccountId"
-        },
-        {
-          "name": "collateral_vault_id",
-          "type": "AccountId"
-        },
-        {
-          "name": "treasury_id",
-          "type": "AccountId"
-        },
-        {
-          "name": "ata_program_id",
-          "type": "ProgramId"
-        },
-        {
-          "name": "fee_bps",
-          "type": "u128"
-        },
-        {
-          "name": "one_directional",
-          "type": "bool"
-        },
-        {
-          "name": "end_timestamp_ms",
-          "type": "u64"
-        },
-        {
-          "name": "min_duration_ms",
-          "type": "u64"
-        },
-        {
-          "name": "nonce",
-          "type": "u64"
-        },
-        {
-          "name": "created_ts_ms",
-          "type": "i64"
-        },
-        {
-          "name": "virt_token",
-          "type": "u128"
-        },
-        {
-          "name": "virt_collateral",
-          "type": "u128"
-        },
-        {
-          "name": "k",
-          "type": "u128"
-        },
-        {
-          "name": "sale_reserve_initial",
-          "type": "u128"
-        },
-        {
-          "name": "dex_seed_reserve",
-          "type": "u128"
-        },
-        {
-          "name": "sale_reserve",
-          "type": "u128"
-        },
-        {
-          "name": "real_collateral",
-          "type": "u128"
-        },
-        {
-          "name": "status",
-          "type": "SaleStatus"
-        },
-        {
-          "name": "cum_collateral_in",
-          "type": "u128"
-        },
-        {
-          "name": "cum_fees",
-          "type": "u128"
-        },
-        {
-          "name": "buy_count",
-          "type": "u64"
-        },
-        {
-          "name": "sell_count",
-          "type": "u64"
-        },
-        {
-          "name": "obs",
-          "type": "Vec<SupplyObservation>"
-        },
-        {
-          "name": "token_name",
-          "type": "String"
-        },
-        {
-          "name": "token_symbol",
-          "type": "String"
         }
       ]
     }

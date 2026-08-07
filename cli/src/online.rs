@@ -672,6 +672,35 @@ pub fn create_ata(paths: &WalletPaths, ata_program: ProgramId, owner: Option<Str
     Ok(())
 }
 
+/// Create and initialise a fresh public token holding for `token_def`, printing
+/// its id.
+///
+/// Needed because a token transfer to a never-initialised holding is rejected:
+/// the token program claims the recipient with `Claim::Authorized`, which the
+/// runtime only grants to an account the transaction signed for, and the wallet
+/// does not co-sign transfer recipients. The LEZ wallet CLI has no
+/// token-account-init subcommand of its own, so scripts that need a funded
+/// recipient (bootstrap seeding a treasury, a buyer holding, ...) had no way to
+/// make one. Use this, then send to the id it prints.
+pub fn init_holding(paths: &WalletPaths, token_def: AccountId, json: bool) -> Result<(), String> {
+    let holding = run(paths, json, "initialising token holding", |c| {
+        c.init_token_holding(token_def)
+    })?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "op": "init-holding",
+                "holding": hex(holding.to_bytes().as_ref()),
+                "account": acct(holding, false),
+            })
+        );
+    } else {
+        ui::ok(&format!("token holding  -  {}", acct(holding, false)));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn bc_buy_ata(paths: &WalletPaths, program: ProgramId, ata_program: ProgramId, sale: AccountId, owner: Option<String>, fund_from: Option<String>, collateral_in: u128, min_out: Option<u128>, slippage_bps: u128, json: bool) -> Result<(), String> {
     let tx = run(paths, json, "buying (ATA)", |c| {

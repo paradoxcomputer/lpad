@@ -66,6 +66,16 @@ enum Cmd {
     ShieldLez { #[arg(long)] amount: u128, #[arg(long)] from: Option<String> },
     /// [online] Deshield WLEZ back to native LEZ: deshield WLEZ then unwrap (one shot).
     DeshieldLez { #[arg(long)] amount: u128 },
+    /// [online] Create + initialise a fresh public token holding for a token definition.
+    ///
+    /// Prints the new holding's id. A transfer to a never-initialised holding is
+    /// rejected (the token program claims the recipient as Authorized, which the
+    /// runtime only grants to a signer), and the LEZ wallet has no equivalent
+    /// command, so use this to make a recipient before sending to it.
+    InitHolding {
+        #[arg(long = "token-def")]
+        token_def: String,
+    },
     /// [online] Create your Associated Token Account for a token definition (idempotent).
     CreateAta {
         #[arg(long = "token-def")]
@@ -217,6 +227,9 @@ fn main() {
         Cmd::Deshield { token_def, amount } => parse_account(&token_def).and_then(|d| paths().and_then(|p| online::deshield(&p, d, amount, json))),
         Cmd::ShieldLez { amount, from } => paths().and_then(|p| online::shield_lez(&p, amount, from, json)),
         Cmd::DeshieldLez { amount } => paths().and_then(|p| online::deshield_lez(&p, amount, json)),
+        Cmd::InitHolding { token_def } => {
+            parse_account(&token_def).and_then(|d| paths().and_then(|p| online::init_holding(&p, d, json)))
+        }
         Cmd::CreateAta { token_def, owner, ata_program } => {
             let ata = match ata_program { Some(s) => parse_program(&s), None => lpad_sdk::ata_program_id() };
             ata.and_then(|ata| parse_account(&token_def).and_then(|d| paths().and_then(|p| online::create_ata(&p, ata, owner, d, json))))
