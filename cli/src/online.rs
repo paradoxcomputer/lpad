@@ -9,10 +9,13 @@ use lee_core::{account::AccountId, program::ProgramId};
 
 use crate::ui;
 
-/// Resolved wallet config + storage paths, and which sequencer to use.
+/// Resolved wallet config + storage + statistics paths, and which sequencer to use.
 pub struct WalletPaths {
     pub config: PathBuf,
     pub storage: PathBuf,
+    /// Per-sequencer latency samples (v0.2.1+). See
+    /// [`LaunchpadClient::record_sequencer_statistics`].
+    pub statistics: PathBuf,
     /// `None` means "whatever the wallet config already points at". A `Some`
     /// overrides it for this invocation only, without rewriting the file.
     pub network: Option<Network>,
@@ -42,6 +45,9 @@ impl WalletPaths {
             .unwrap_or_else(default_home);
         let config = PathBuf::from(config.unwrap_or_else(|| format!("{home}/wallet_config.json")));
         let storage = PathBuf::from(storage.unwrap_or_else(|| format!("{home}/storage.json")));
+        let statistics = config
+            .parent()
+            .map_or_else(|| PathBuf::from("statistics.json"), |d| d.join("statistics.json"));
         if !config.exists() {
             return Err(format!(
                 "no wallet config at {} - run `bash scripts/bootstrap.sh` to create one, \
@@ -53,7 +59,7 @@ impl WalletPaths {
         if let Some(dir) = config.parent() {
             detect_proof_mode(dir);
         }
-        Ok(Self { config, storage, network })
+        Ok(Self { config, storage, statistics, network })
     }
 }
 
@@ -162,13 +168,21 @@ fn run<T>(
         let mut c = LaunchpadClient::open(
             paths.config.clone(),
             paths.storage.clone(),
+            paths.statistics.clone(),
             paths.network.as_ref(),
         )?;
         let h = sp.handle();
         c.set_progress(move |m| {
             h.set_message(m.to_owned());
         });
-        op(&mut c)
+        let out = op(&mut c);
+        // Persist the latency samples this process gathered, so the next command
+        // does not re-calibrate every sequencer. Best-effort: a failure here must
+        // not mask the command's own result.
+        if out.is_ok() {
+            let _ = c.record_sequencer_statistics();
+        }
+        out
     })();
     sp.clear();
     result

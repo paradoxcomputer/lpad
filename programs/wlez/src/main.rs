@@ -1,14 +1,13 @@
 //! Guest entrypoint for the WLEZ (wrapped native LEZ) program.
 //!
-//! Replaces the SPEL `#[lez_program]` guest used under LEZ v0.2.0-rc4; SPEL is
-//! gone in v0.2.1, so the dispatch is written out by hand.
+//! Replaces the SPEL `#[lez_program]` guest used under LEZ v0.2.0-rc4; SPEL was
+//! deleted upstream, so the dispatch is written out by hand.
 //!
 //! WLEZ instructions carry no deadline and touch no clock account, so no
 //! validity window is applied.
 
 use lee_core::program::{ProgramInput, ProgramOutput, read_lee_inputs};
 use wlez_core::Instruction;
-use wlez_program::dispatch::filter_output;
 
 fn main() {
     let (
@@ -87,14 +86,12 @@ fn main() {
         }
     };
 
-    let (filtered_pre, filtered_post) = filter_output(pre_states_clone, post_states);
-
     ProgramOutput::new(
         self_program_id,
         caller_program_id,
         instruction_words,
-        filtered_pre,
-        filtered_post,
+        pre_states_clone,
+        post_states,
     )
     .with_chained_calls(chained_calls)
     .write();

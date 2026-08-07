@@ -31,11 +31,11 @@ trader, so the pool stays solvent. License: **MIT OR Apache-2.0**.
 
 ## Build & test
 
-Builds against LEZ **`v0.2.0`**, pulled straight from the published git tag - there is
-no LEZ checkout to wire up and no path-patching. `v0.2.0` is the version both public
-sequencers run; `v0.2.1` changes the built-in program image ids, so a `v0.2.1` build
-cannot transact against them. See
-[`docs/UPGRADE-v0.2.0.md`](docs/UPGRADE-v0.2.0.md) for the full migration record.
+Builds against LEZ **`v0.2.4`**, pulled straight from the published git tag - there is
+no LEZ checkout to wire up and no path-patching. `v0.2.4` matches what both public
+sequencers run (verified against their live built-in program ids), and brings the new
+L1 transitively. See
+[`docs/UPGRADE-v0.2.4.md`](docs/UPGRADE-v0.2.4.md) for the full migration record.
 
 Two things beyond `cargo` are required: **Docker** + `cargo-risczero` (only to rebuild
 the zkVM guests, whose prebuilt ELFs are committed), and **libpcsclite** (the v0.2.1

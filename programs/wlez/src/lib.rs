@@ -3,7 +3,6 @@
 
 pub use wlez_core as core;
 
-pub mod dispatch;
 pub mod initialize;
 pub mod unwrap;
 pub mod wrap;

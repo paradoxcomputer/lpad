@@ -9,7 +9,7 @@ lee_core = { workspace = true, features = ["host"] }
 # The shared genesis-state builder: seeds the clock accounts, the dummy
 # commitment and every built-in program. Replaces rc4's
 # V03State::new_with_genesis_accounts, which is gone.
-testnet_initial_state = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
+testnet_initial_state = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 # Upstream token / ATA programs, as committed reproducible artifacts. lpad used
 # to build hardened forks of both from its own guest crates; v0.2.1 ships them
 # with machine-independent image ids, so the tests exercise the same programs the

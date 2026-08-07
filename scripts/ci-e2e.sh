@@ -25,7 +25,7 @@ echo "== 2. Guest artifacts present =="
 #
 # This replaces the old IDL drift check. IDL *generation* went away with the LEZ
 # v0.2.1 upgrade (it was a SPEL feature, and SPEL no longer exists), so
-# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.0.md.
+# artifacts/*-idl.json are now hand-maintained; see docs/UPGRADE-v0.2.4.md.
 for g in bonding_curve lbp wlez; do
   [ -f "$PROG/artifacts/lpad/${g}.bin" ] || \
     fail "missing artifacts/lpad/${g}.bin - run scripts/build-guests.sh"

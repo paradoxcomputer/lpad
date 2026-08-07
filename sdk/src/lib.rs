@@ -416,7 +416,12 @@ impl LaunchpadClient {
     /// `network`, when given, overrides the sequencer in the wallet config
     /// *without rewriting the file* - so `--network` is a per-invocation switch
     /// and cannot silently repoint a wallet for later commands.
-    pub fn open(config: PathBuf, storage: PathBuf, network: Option<&Network>) -> Result<Self> {
+    pub fn open(
+        config: PathBuf,
+        storage: PathBuf,
+        statistics: PathBuf,
+        network: Option<&Network>,
+    ) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -428,15 +433,38 @@ impl LaunchpadClient {
                     .url()
                     .parse()
                     .map_err(|e| format!("invalid sequencer URL for network {n}: {e}"))?;
+                // v0.2.1+ replaced the single `sequencer_addr` with a list, so the
+                // override sets a one-element list rather than a scalar.
                 Some(wallet::config::WalletConfigOverrides {
-                    sequencer_addr: Some(url),
+                    sequencers: Some(vec![wallet::config::SequencerConnectionData {
+                        sequencer_addr: url,
+                        basic_auth: None,
+                    }]),
                     ..Default::default()
                 })
             }
         };
-        let wallet = WalletCore::new_update_chain(config, storage, overrides)
+        // Async since v0.2.1: opening may calibrate the configured sequencers.
+        let wallet = rt
+            .block_on(WalletCore::new_update_chain(config, storage, statistics, overrides))
             .map_err(|e| format!("open wallet: {e}"))?;
         Ok(Self { wallet, rt, progress: None })
+    }
+
+    /// Persist the sequencer latency statistics gathered during this session.
+    ///
+    /// On open the wallet calibrates every sequencer absent from
+    /// `statistics.json` with `calibration_limit` (default 100) sequential
+    /// requests. The CLI opens a fresh wallet per command, so skipping this would
+    /// pay that cost on every invocation - and against a real WAN sequencer that
+    /// is far worse than it was against localhost. Call once after a successful
+    /// command, as the upstream wallet CLI does.
+    pub fn record_sequencer_statistics(&mut self) -> Result<()> {
+        let rt = &self.rt;
+        let wallet = &mut self.wallet;
+        let _silence = gag::Gag::stdout().ok();
+        rt.block_on(async { wallet.client_rotation().await })
+            .map_err(|e| format!("record sequencer statistics: {e}"))
     }
 
     /// Register a progress sink. The SDK calls it with a short phase label
@@ -460,8 +488,10 @@ impl LaunchpadClient {
 
     /// Current sequencer block height.
     pub fn block_height(&self) -> Result<u64> {
+        // v0.2.1+ routes this through the wallet's multi-sequencer client; the
+        // public `sequencer_client` field is gone.
         self.rt
-            .block_on(async { self.wallet.sequencer_client.get_last_block_id().await })
+            .block_on(async { self.wallet.get_last_block_id().await })
             .map_err(|e| format!("get block height: {e}"))
     }
 
@@ -504,7 +534,7 @@ impl LaunchpadClient {
         self.rt.block_on(async {
             let nonces = self
                 .wallet
-                .get_accounts_nonces(signers.to_vec())
+                .get_accounts_nonces(signers)
                 .await
                 .map_err(|e| format!("fetch nonces: {e}"))?;
             let mut keys: Vec<&lee::PrivateKey> = Vec::with_capacity(signers.len());
@@ -519,15 +549,16 @@ impl LaunchpadClient {
                 .map_err(|e| format!("build message: {e}"))?;
             let witness = WitnessSet::for_message(&message, &keys);
             self.report("submitting transaction");
+            // `helm_owned()` replaces the removed public `sequencer_client` field.
             let hash = self
                 .wallet
-                .sequencer_client
+                .helm_owned()
                 .send_transaction(LeeTransaction::Public(PublicTransaction::new(message, witness)))
                 .await
                 .map_err(|e| format!("submit: {e}"))?;
             self.report("waiting for inclusion");
             self.wallet
-                .poll_native_token_transfer(hash)
+                .poll_transaction(hash)
                 .await
                 .map_err(|e| format!("tx rejected / not included: {e}"))?;
             Ok(to_hash(hash))
@@ -1903,8 +1934,8 @@ impl LaunchpadClient {
                 .send_privacy_preserving_tx(vec![from, to], data, &token_prog)
                 .await
                 .map_err(|e| format!("privacy transfer failed: {e:?}"))?;
-            let tx = wallet
-                .poll_native_token_transfer(hash)
+            let (tx, _block_id) = wallet
+                .poll_transaction(hash)
                 .await
                 .map_err(|e| format!("tx not included: {e}"))?;
             if let LeeTransaction::PrivacyPreserving(ppt) = tx
@@ -1958,25 +1989,30 @@ mod chain_parity {
     //!
     //! These ids were read off BOTH live sequencers (`getProgramIds`, plus the
     //! clock account's `program_owner`, which is an independent check because the
-    //! clock account id is a fixed literal rather than an image id). They are what
-    //! forced the pin to v0.2.0: v0.2.1 computes different values for all of them.
+    //! clock account id is a fixed literal rather than an image id).
+    //!
+    //! Current values correspond to LEZ v0.2.4. The guest ELFs are byte-identical
+    //! across v0.2.2, v0.2.3 and v0.2.4, so any of those tags satisfies these -
+    //! which is why v0.2.4 is safe to pin even though the RPC cannot tell us which
+    //! of the three the operators actually run.
     //!
     //! If one of these fails after a LEZ version bump, the new version is NOT
     //! deployed on these networks yet - do not ship it.
 
     /// `token` on testnet.lez.logos.co and seq-testnet.paradox.computer.
     const DEPLOYED_TOKEN: [u32; 8] = [
-        2282739141, 348907455, 1046946228, 3735699860, 585462133, 3426087150, 772528164, 2090518099,
+        1047643340, 4291649067, 2093396023, 4016657193, 3904308476, 481382041, 2987082047,
+        2603530278,
     ];
     /// `authenticated_transfer` on both networks.
     const DEPLOYED_AUTH_TRANSFER: [u32; 8] = [
-        3170810844, 2526647253, 999807262, 1205602179, 3401962591, 3484055895, 2106546407,
-        1900691388,
+        583309054, 2344528779, 3806558405, 2890696795, 2257354672, 3978764116, 2273929063,
+        1518858078,
     ];
     /// `clock` on both networks - cross-checked against the on-chain clock
     /// account's `program_owner`.
     const DEPLOYED_CLOCK: [u32; 8] = [
-        979979912, 3730255152, 96781338, 501898186, 3738241015, 2113460497, 2222463973, 1670293850,
+        96247601, 2082502477, 822865082, 1048693993, 3544189898, 772921104, 1694408900, 4234239033,
     ];
 
     #[test]

@@ -69,15 +69,23 @@ python3 - "$HOME_DIR/wallet_config.json" "$SEQ_ADDR" <<'PY'
 import json,sys
 p,addr=sys.argv[1],sys.argv[2]
 d=json.load(open(p))
-# v0.2.0 schema: one `sequencer_addr`. (The `sequencers` array + multi-sequencer
-# client only arrive in v0.2.1.) `initial_accounts` was an rc4 field.
+# v0.2.4 schema: a `sequencers` array (v0.2.0 had a single `sequencer_addr`).
+# `initial_accounts` was an rc4 field.
 d.pop("initial_accounts", None)
-d["sequencer_addr"] = addr
+# v0.2.4 replaced the single `sequencer_addr` with a list.
+d.pop("sequencer_addr", None)
+d["sequencers"] = [{"sequencer_addr": addr}]
 # Real networks make blocks slower than a local dev chain did, and a round trip
 # is a WAN hop - give polling room.
 d["seq_poll_timeout"] = "20s"
 d["seq_tx_poll_max_blocks"] = 20
 d["seq_poll_max_retries"] = 10
+# On open the wallet probes every sequencer absent from statistics.json this many
+# times (default 100). The CLI opens a fresh wallet per command, and over a WAN
+# hop that default is punishing.
+d.setdefault("multi_sequencer_client_config", {})
+d["multi_sequencer_client_config"]["distribution_limit"] = 1
+d["multi_sequencer_client_config"]["calibration_limit"] = 3
 json.dump(d,open(p,"w"),indent=4)
 PY
 # A real sequencer verifies proofs, so dev-mode proving can never work against

@@ -1,14 +1,17 @@
 //! Guest entrypoint for the LPAD liquidity-bootstrapping-pool program (RFP-016).
 //!
-//! Replaces the SPEL `#[lez_program]` guest used under LEZ v0.2.0-rc4; SPEL is
-//! gone in v0.2.1, so the dispatch the macro generated is written out by hand.
+//! Replaces the SPEL `#[lez_program]` guest used under LEZ v0.2.0-rc4; SPEL was
+//! deleted upstream, so the dispatch is written out by hand.
+//!
+//! Pre-states are emitted verbatim: v0.2.4 rejects a transaction that drops any
+//! declared account (`DeclaredAccountMissingFromOutput`).
 //!
 //! The account order in each arm is part of the on-chain ABI: it must match the
 //! order the SDK builds its account list in, and the doc comments on
 //! `lbp_core::Instruction`.
 
 use lbp_core::Instruction;
-use lbp_program::dispatch::{clock_block_id, clock_ms, echo_clock, filter_output};
+use lbp_program::dispatch::{clock_block_id, clock_ms, echo_clock};
 use lee_core::program::{ProgramInput, ProgramOutput, read_lee_inputs};
 
 fn main() {
@@ -260,14 +263,12 @@ fn main() {
         }
     };
 
-    let (filtered_pre, filtered_post) = filter_output(pre_states_clone, post_states);
-
     ProgramOutput::new(
         self_program_id,
         caller_program_id,
         instruction_words,
-        filtered_pre,
-        filtered_post,
+        pre_states_clone,
+        post_states,
     )
     .with_chained_calls(chained_calls)
     .with_timestamp_validity_window(..deadline)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-proof verification of the private paths against a real LEZ v0.2.0 sequencer.
+# Real-proof verification of the private paths against a real LEZ v0.2.4 sequencer.
 # Waits for the real-proof bootstrap, then runs every private buy variant with a
 # real recursive STARK and times each. Public ops carry no client proof, so they
 # are a quick sanity that the real-proof sequencer accepts our txs at all.

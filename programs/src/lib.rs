@@ -65,20 +65,20 @@ mod inner {
     /// Updating these is a deliberate act: rebuild the guests, redeploy all three
     /// programs, and expect existing sales/pools to be unreachable.
     pub mod deployed {
-        /// `bonding_curve.bin`, built against LEZ v0.2.0.
+        /// `bonding_curve.bin`, built against LEZ v0.2.4.
         pub const BONDING_CURVE: [u32; 8] = [
-            1905707401, 533061904, 2472444737, 2302353893, 4166150027, 3390801879, 869870283,
-            1585233453,
+            2565909590, 1089191793, 3096775970, 3601414694, 2551522959, 1119295349, 390623576,
+            571803788,
         ];
-        /// `lbp.bin`, built against LEZ v0.2.0.
+        /// `lbp.bin`, built against LEZ v0.2.4.
         pub const LBP: [u32; 8] = [
-            925027583, 1974654221, 2894767176, 1099259783, 3784388778, 1190549811, 3168599590,
-            834686242,
+            1887109823, 1038855689, 1807287308, 1616265736, 549739187, 1066856073, 3271529204,
+            2612835954,
         ];
-        /// `wlez.bin`, built against LEZ v0.2.0.
+        /// `wlez.bin`, built against LEZ v0.2.4.
         pub const WLEZ: [u32; 8] = [
-            2289652302, 844591485, 757892305, 633811090, 3177379699, 1411153150, 315511500,
-            2255764983,
+            2256988620, 4234924746, 2824019580, 1455987179, 2844105107, 818985403, 4189727749,
+            654478936,
         ];
     }
 

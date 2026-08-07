@@ -1,16 +1,19 @@
 //! Guest entrypoint for the LPAD bonding-curve program (RFP-015).
 //!
-//! Replaces the SPEL `#[lez_program]` guest that LEZ v0.2.0-rc4 used. SPEL is
-//! gone in v0.2.1, so the dispatch the macro generated - match the instruction,
-//! destructure `pre_states` into the handler's account arguments, filter the
-//! output, write the `ProgramOutput` - is written out by hand here.
+//! Replaces the SPEL `#[lez_program]` guest that LEZ v0.2.0-rc4 used. SPEL was
+//! deleted upstream, so the dispatch the macro generated - match the instruction,
+//! destructure `pre_states` into the handler's account arguments, write the
+//! `ProgramOutput` - is written out by hand here.
+//!
+//! Pre-states are emitted verbatim: v0.2.4 rejects a transaction that drops any
+//! declared account (`DeclaredAccountMissingFromOutput`). See `dispatch.rs`.
 //!
 //! The account order in each arm is part of the on-chain ABI: it must match the
 //! order the SDK builds its account list in, and the doc comments on
 //! `bonding_curve_core::Instruction`.
 
 use bonding_curve_core::Instruction;
-use bonding_curve_program::dispatch::{clock_ms, echo_clock, filter_output};
+use bonding_curve_program::dispatch::{clock_ms, echo_clock};
 use lee_core::program::{ProgramInput, ProgramOutput, read_lee_inputs};
 
 fn main() {
@@ -257,14 +260,12 @@ fn main() {
         }
     };
 
-    let (filtered_pre, filtered_post) = filter_output(pre_states_clone, post_states);
-
     ProgramOutput::new(
         self_program_id,
         caller_program_id,
         instruction_words,
-        filtered_pre,
-        filtered_post,
+        pre_states_clone,
+        post_states,
     )
     .with_chained_calls(chained_calls)
     .with_timestamp_validity_window(..deadline)

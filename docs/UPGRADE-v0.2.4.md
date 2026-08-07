@@ -1,27 +1,31 @@
-# Upgrading LPAD from LEZ `v0.2.0-rc4` to `v0.2.0`
+# Upgrading LPAD across LEZ `v0.2.0-rc4` → `v0.2.0` → `v0.2.4`
 
-> **Pinned at `v0.2.0`, not `v0.2.1`.** The work below was originally done
-> against `v0.2.1`, then retargeted one tag back. Reason: both sequencers lpad
-> actually uses run **v0.2.0** —
+> **Now pinned at `v0.2.4`.** Both sequencers were reset and upgraded (heights
+> dropped from 49192/5364 to ~1085/203), and a new L1 came with them
+> (`logos-blockchain` rev `d8711bbc` → `e2a1c3b7`, inherited transitively — lpad
+> has no direct L1 dependency).
 >
-> | program | `v0.2.1` computes | deployed on both chains (`v0.2.0`) |
+> The chains' built-in ids now match `v0.2.4` exactly:
+>
+> | program | deployed on both chains | v0.2.4 computes |
 > |---|---|---|
-> | `token` | `[3202377277, 3910122468, …]` | `[2282739141, 348907455, …]` |
-> | `authenticated_transfer` | `[477196038, 3380722759, …]` | `[3170810844, 2526647253, …]` |
-> | `privacy_preserving_circuit` | v0.2.1 build | `[1473414827, 2830688453, …]` |
+> | `token` | `[1047643340, 4291649067, …]` | same |
+> | `authenticated_transfer` | `[583309054, 2344528779, …]` | same |
+> | `clock` | `[96247601, 2082502477, …]` (from the live clock account's `program_owner`) | same |
 >
-> A `v0.2.1` build therefore cannot transact against them at all: token
-> transfers would target a program that is not there, and shielded proofs would
-> be rejected. Verified by matching the deployed `token` id against every tag's
-> committed `token.bin`.
+> Note the guest ELFs are **byte-identical across `v0.2.2`, `v0.2.3` and
+> `v0.2.4`**, so the RPC cannot tell which of the three the operators run — and it
+> does not matter: any of them satisfies the parity guard. That is why `v0.2.4` is
+> safe to pin here, unlike the earlier v0.2.1-vs-v0.2.0 mismatch.
 >
-> Everything structural in this document lands at or before `v0.2.0` (the
-> rename, the SPEL deletion, reproducible guest artifacts, `AccountIdentity`), so
-> retargeting cost only the wallet-layer deltas listed in §7. Re-read §7 with
-> that in mind: the three rows marked *v0.2.1-only* do **not** apply.
+> **The v0.2.0 → v0.2.4 delta for lpad was small.** 395 upstream commits, but the
+> programs workspace needed *zero* changes and the whole port was: bump the tag,
+> re-apply the v0.2.1-shaped wallet layer (async 4-arg `new_update_chain` with a
+> statistics path, `poll_transaction`, `helm_owned`, sliced nonces), switch the
+> `WalletConfigOverrides` sequencer override from a scalar to the `sequencers`
+> list, and delete `filter_output` (§12).
 >
-> To move to `v0.2.1` later, bump the tag, re-apply those three wallet changes,
-> rebuild the guests, and redeploy — but only once the sequencers have upgraded.
+> Sections below that say "v0.2.1-only" now DO apply — v0.2.4 is past v0.2.1.
 
 This was not a version bump. Between the two tags upstream landed 691 commits
 including a whole-repo rename, the deletion of the program-authoring framework
@@ -277,3 +281,36 @@ One caveat on reading the chain: the sequencer's `getProgramIds` RPC returns a
 **hardcoded five-entry list** with a `// TODO: Get programs from state`, so it is
 not a reliable inventory of what is deployed. Query a known account id instead
 (the clock account is a fixed literal, so it works across versions).
+
+---
+
+## 12. v0.2.4 removed the need for the SPEL post-state filter
+
+v0.2.4 commit `7bc4c460` added `DeclaredAccountMissingFromOutput`: every account
+in `message.account_ids` must appear in the final state diff. Its message names
+the motivating case explicitly — *"a program (or a macro-generated dispatcher
+wrapping one) that silently drops an account from both sides of its own output"*.
+That is exactly what the ported SPEL `filter_output` did (§3.1).
+
+Both constraints are live in v0.2.4 and, for an offending account, they are now
+mutually exclusive:
+
+* echo a `DEFAULT`-owned account with a non-default pre-state → rule 7,
+  `NonDefaultAccountWithDefaultOwner`
+* drop it → `DeclaredAccountMissingFromOutput`
+
+So filtering can no longer rescue a transaction; it only swaps rule 7's precise
+error for a vaguer one. **`filter_output` is therefore deleted**, and all three
+guests now emit `pre_states_clone` verbatim, matching upstream's own programs.
+
+The real constraint moved to the caller: never *declare* an account that is
+`DEFAULT`-owned with non-default state. lpad satisfies this already — every
+account it declares is owned by the token program, the authenticated-transfer
+program (funded native accounts), or is a PDA the program claims. Rule 7 keys on
+`program_owner == DEFAULT`, so a funded creator never trips it; the filter only
+ever mattered for a bare keypair that had signed but held nothing.
+
+Verified empirically: the full 21-test integration suite passes against the real
+v0.2.4 state machine both with the filter neutralised and with it removed. `wlez`
+had no other dispatch helpers, so its `dispatch.rs` is gone entirely; the
+bonding-curve and LBP modules keep their clock helpers.

@@ -76,12 +76,12 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 # Upstream LEZ programs as committed reproducible artifacts. `artifacts` is
 # mandatory and deliberately not a default feature upstream, so every consumer
 # must name it explicitly.
-programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", default-features = false, features = [
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", default-features = false, features = [
     "artifacts",
 ] }
 # Canonical token / ATA / authenticated-transfer core types. lpad used to vendor
@@ -90,10 +90,10 @@ programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git
 # contract those forks enforced is now re-asserted by lpad's own callers.
 # `ata_core` keeps its short local name via a package rename so call sites are
 # untouched.
-token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-authenticated_transfer_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+authenticated_transfer_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 
 bonding_curve_core = { path = "bonding_curve/core" }
 bonding_curve_program = { path = "bonding_curve" }

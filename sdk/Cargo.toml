@@ -18,19 +18,19 @@ wlez_core = { path = "../programs/wlez/core" }
 lpad_guests = { path = "../programs", features = ["artifacts"] }
 # The canonical upstream token / ATA / authenticated-transfer programs, also as
 # committed artifacts. `artifacts` is mandatory and not a default feature.
-programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", default-features = false, features = [
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", default-features = false, features = [
     "artifacts",
 ] }
-token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", features = [
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = [
     "host",
 ] }
 # Online (wallet-backed) layer - build/sign/submit txs + read chain state.
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0" }
-sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0", features = [
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
+sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = [
     "client"
 ] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
