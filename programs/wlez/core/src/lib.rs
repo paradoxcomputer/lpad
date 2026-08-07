@@ -40,15 +40,18 @@ pub enum Instruction {
     /// PDA seed). Idempotent: if the vault/definition are already
     /// initialised, returns a no-op echo of their post-states.
     ///
-    /// Required accounts (3):
-    ///   - Vault (PDA, default or already-claimed)
-    ///   - WLEZ definition (PDA, default or already-initialised)
-    ///   - A reference token-program definition account. Its
+    /// Required accounts (5), in order:
+    ///   0. `vault` (PDA, default or already-claimed)
+    ///   1. `definition` - WLEZ definition (PDA, default or already-initialised)
+    ///   2. `init_holding` - the holding `token::NewFungibleDefinition` requires
+    ///      for the initial supply (0 for WLEZ; untouched afterwards)
+    ///   3. `reference_token_def` - a reference token-program definition. Its
     ///     `program_owner` must equal `token_program_id` (the caller-
     ///     pinned canonical token program); this is the program the
     ///     WLEZ definition will be created under. Pinning the expected
-    ///     id prevents a malicious reference definition from redirecting
-    ///     the WLEZ definition's owning program at bootstrap.
+    ///      id prevents a malicious reference definition from redirecting
+    ///      the WLEZ definition's owning program at bootstrap.
+    ///   4. `payer` - signs the setup transaction.
     ///
     /// `native_program_id` is the canonical native/authenticated-transfer
     /// program; Initialize records it in the vault's `data` so that every
