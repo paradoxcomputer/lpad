@@ -77,9 +77,12 @@ d.pop("sequencer_addr", None)
 d["sequencers"] = [{"sequencer_addr": addr}]
 # Real networks make blocks slower than a local dev chain did, and a round trip
 # is a WAN hop - give polling room.
-d["seq_poll_timeout"] = "20s"
-d["seq_tx_poll_max_blocks"] = 20
-d["seq_poll_max_retries"] = 10
+# Budget = seq_poll_max_retries x seq_poll_timeout. Blocks are ~46-50s on the
+# public sequencers, so the old 10 x 20s gave under 4 blocks of patience and a
+# slow inclusion was indistinguishable from a rejection. 60 x 30s ~= 30 min.
+d["seq_poll_timeout"] = "30s"
+d["seq_tx_poll_max_blocks"] = 40
+d["seq_poll_max_retries"] = 60
 # On open the wallet probes every sequencer absent from statistics.json this many
 # times (default 100). The CLI opens a fresh wallet per command, and over a WAN
 # hop that default is punishing.
@@ -207,6 +210,11 @@ w token send --from "$COLL_HOLD" --to "$TREASURY"   --amount "$INIT_DUST"  >&2 |
 w token send --from "$COLL_HOLD" --to "$BUYER_COLL"  --amount "$BUYER_FUND" >&2 || true; wait_block
 w token send --from "$PROJ_HOLD" --to "$BUYER_TOK"   --amount "$INIT_DUST"  >&2 || true; wait_block
 
+if [ "${LPAD_SKIP_PRIVATE:-0}" = "1" ]; then
+  echo ">> skipping shielded holdings (LPAD_SKIP_PRIVATE=1)"
+  echo "   the private buy/sell paths will have nothing to spend; everything public is unaffected"
+  PRIV_COLL=""; PRIV_PROJ=""
+else
 PRIV_COLL=$(new_priv "lpad-priv-coll-$$")
 PRIV_PROJ=$(new_priv "lpad-priv-proj-$$")
 echo "   priv collateral = $PRIV_COLL"
@@ -214,6 +222,7 @@ echo "   priv project    = $PRIV_PROJ"
 w token send --from "$COLL_HOLD" --to "$PRIV_COLL" --amount "$PRIV_FUND" >&2 || true; wait_block
 w token send --from "$PROJ_HOLD" --to "$PRIV_PROJ" --amount "$INIT_DUST" >&2 || true; wait_block
 w account sync-private >/dev/null 2>&1 || true
+fi
 
 echo ">> creating bonding-curve sale (D=$D R=$R Vt=$VT Vc=$VC fee=${FEE_BPS}bps)"
 lpad bc create-sale --program "$BC_ID" \
