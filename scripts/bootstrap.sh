@@ -99,6 +99,33 @@ echo real > "$HOME_DIR/proof_mode"
 echo ">> network: $NETWORK ($SEQ_ADDR)   wallet home: $HOME_DIR   proofs: REAL"
 
 w() { printf '%s\n' "$PW" | "$WALLET" "$@"; }
+
+# Current sequencer height.
+seq_height() {
+  timeout 60 curl -s -X POST "$SEQ_ADDR" -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getLastBlockId","params":[]}' 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"])' 2>/dev/null
+}
+
+# Block until the chain advances at least one block, so the next step sees the
+# previous transaction's state.
+#
+# This replaces the fixed `wait_block/16/20` this script used against a local dev
+# chain. The public sequencers produce a block roughly every 45-50s, so every one
+# of those sleeps was SHORTER than a single block - dependent steps would read
+# pre-transaction state. Waiting on real height is also self-tuning if the
+# operators change the cadence.
+wait_block() {
+  local want start now waited=0
+  start=$(seq_height); [ -n "$start" ] || { sleep 60; return 0; }
+  want=$((start + ${1:-1}))
+  while [ "$waited" -lt "${LPAD_BLOCK_WAIT_MAX:-240}" ]; do
+    sleep 10; waited=$((waited + 10))
+    now=$(seq_height)
+    [ -n "$now" ] && [ "$now" -ge "$want" ] && { printf '   (block %s, waited %ss)\n' "$now" "$waited" >&2; return 0; }
+  done
+  echo "   ! still at block $(seq_height) after ${waited}s (wanted >= $want) - continuing" >&2
+}
 new_pub() { w account new public 2>&1 | grep -oE 'Public/[1-9A-HJ-NP-Za-km-z]{32,44}' | head -1; }
 new_priv() { w account new private --label "$1" 2>&1 | grep -oE 'Private/[1-9A-HJ-NP-Za-km-z]{32,44}' | head -1; }
 lpad() { "$LPAD" --config "$HOME_DIR/wallet_config.json" --storage "$HOME_DIR/storage.json" "$@"; }
@@ -107,7 +134,23 @@ echo ">> creating accounts"
 CREATOR=$(new_pub);   echo "   creator      = $CREATOR"
 PROJ_DEF=$(new_pub);  PROJ_HOLD=$(new_pub)
 COLL_DEF=$(new_pub);  COLL_HOLD=$(new_pub)
-TREASURY=$(new_pub);  BUYER_COLL=$(new_pub); BUYER_TOK=$(new_pub)
+# NB: treasury/buyer holdings are created later, by `lpad init-holding`, once the
+# token definitions exist - a plain `account new public` id cannot receive a token
+# transfer (see the funding step below).
+
+# v0.2.4 requires an account to be initialized under the authenticated-transfer
+# program before it can RECEIVE native tokens (the pinata claim and any
+# auth-transfer send both refuse an uninitialized recipient).
+#
+# This also happens to be what keeps the creator clear of `validate_execution`
+# rule 7: initializing sets `program_owner` to the authenticated-transfer program,
+# so echoing the creator in a program's post-states is legal. A never-initialized
+# keypair that has merely signed is DEFAULT-owned with a bumped nonce, which rule
+# 7 rejects.
+echo ">> initializing the creator under authenticated-transfer"
+w auth-transfer init --account-id "$CREATOR" >&2 2>&1 \
+  || echo "   (already initialized)" >&2
+wait_block
 
 # On a chain we do not own there is no genesis key to import. Either the caller
 # supplies a funded account, or we self-fund the creator from the pinata faucet.
@@ -123,35 +166,53 @@ else
          echo "  Supply a funded account instead: LPAD_FUNDER=Public/... LPAD_FUNDER_KEY=<hex>" >&2
          exit 1; }
 fi
-sleep 20
+wait_block
 
 echo ">> minting PROJECT (supply $PROJ_SUPPLY) + COLLATERAL (supply $COLL_SUPPLY)"
 w token new --name PROJECT --total-supply "$PROJ_SUPPLY" \
   --definition-account-id "$PROJ_DEF" --supply-account-id "$PROJ_HOLD" >&2
-sleep 14
+wait_block
 w token new --name COLLAT --total-supply "$COLL_SUPPLY" \
   --definition-account-id "$COLL_DEF" --supply-account-id "$COLL_HOLD" >&2
-sleep 14
+wait_block
 
 echo ">> deploying bonding_curve program (own block)"
 BC_BIN="$PROG/artifacts/lpad/bonding_curve.bin"
 [ -f "$BC_BIN" ] || { echo "missing $BC_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
-w deploy-program "$BC_BIN" >&2 2>&1 || true
-sleep 20
+w deploy-program "$BC_BIN" >&2 2>&1 || { echo "✗ bonding_curve deploy failed" >&2; exit 1; }
+wait_block
 BC_ID=$(lpad program-id bc --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
 echo "   bonding_curve program id = $BC_ID"
 
-echo ">> funding treasury (init), public buyer holdings, shielded private holdings"
-w token send --from "$COLL_HOLD" --to "$TREASURY"   --amount "$INIT_DUST"  >&2 || true; sleep 14
-w token send --from "$COLL_HOLD" --to "$BUYER_COLL"  --amount "$BUYER_FUND" >&2 || true; sleep 14
-w token send --from "$PROJ_HOLD" --to "$BUYER_TOK"   --amount "$INIT_DUST"  >&2 || true; sleep 14
+# A token transfer to a never-initialised holding is REJECTED (silently dropped
+# from the mempool, which surfaces only as "All pollers failed"): the token
+# program claims the recipient with `Claim::Authorized`, and the runtime grants
+# that only for an account the transaction signed for - the wallet does not
+# co-sign transfer recipients. The LEZ wallet has no token-account-init command,
+# so use lpad's, which creates AND initialises the holding and prints its id.
+echo ">> creating initialised token holdings (treasury, buyer collateral, buyer token)"
+init_holding() {
+  lpad init-holding --token-def "$1" --json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])'
+}
+TREASURY=$(init_holding "$COLL_DEF");    echo "   treasury     = $TREASURY";   wait_block
+BUYER_COLL=$(init_holding "$COLL_DEF");  echo "   buyer collat = $BUYER_COLL"; wait_block
+BUYER_TOK=$(init_holding "$PROJ_DEF");   echo "   buyer token  = $BUYER_TOK";  wait_block
+for v in TREASURY BUYER_COLL BUYER_TOK; do
+  [ -n "${!v}" ] || { echo "✗ failed to initialise $v holding" >&2; exit 1; }
+done
+
+echo ">> funding treasury + public buyer holdings"
+w token send --from "$COLL_HOLD" --to "$TREASURY"   --amount "$INIT_DUST"  >&2 || true; wait_block
+w token send --from "$COLL_HOLD" --to "$BUYER_COLL"  --amount "$BUYER_FUND" >&2 || true; wait_block
+w token send --from "$PROJ_HOLD" --to "$BUYER_TOK"   --amount "$INIT_DUST"  >&2 || true; wait_block
 
 PRIV_COLL=$(new_priv "lpad-priv-coll-$$")
 PRIV_PROJ=$(new_priv "lpad-priv-proj-$$")
 echo "   priv collateral = $PRIV_COLL"
 echo "   priv project    = $PRIV_PROJ"
-w token send --from "$COLL_HOLD" --to "$PRIV_COLL" --amount "$PRIV_FUND" >&2 || true; sleep 16
-w token send --from "$PROJ_HOLD" --to "$PRIV_PROJ" --amount "$INIT_DUST" >&2 || true; sleep 16
+w token send --from "$COLL_HOLD" --to "$PRIV_COLL" --amount "$PRIV_FUND" >&2 || true; wait_block
+w token send --from "$PROJ_HOLD" --to "$PRIV_PROJ" --amount "$INIT_DUST" >&2 || true; wait_block
 w account sync-private >/dev/null 2>&1 || true
 
 echo ">> creating bonding-curve sale (D=$D R=$R Vt=$VT Vc=$VC fee=${FEE_BPS}bps)"
@@ -160,7 +221,7 @@ lpad bc create-sale --program "$BC_ID" \
   --creator-token-holding "$PROJ_HOLD" --creator "$CREATOR" \
   --sale-quantity "$D" --dex-seed "$R" --vt "$VT" --vc "$VC" \
   --fee-bps "$FEE_BPS" --nonce "$NONCE" >&2
-sleep 16
+wait_block
 
 SALE_ID=$(lpad bc ids --program "$BC_ID" --token-def "$PROJ_DEF" \
   --collateral-def "$COLL_DEF" --creator "$CREATOR" --nonce "$NONCE" --json \
@@ -171,14 +232,14 @@ echo "   sale id = $SALE_ID"
 echo ">> deploying lbp program (own block)"
 LBP_BIN="$PROG/artifacts/lpad/lbp.bin"
 [ -f "$LBP_BIN" ] || { echo "missing $LBP_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
-w deploy-program "$LBP_BIN" >&2 2>&1 || true
-sleep 20
+w deploy-program "$LBP_BIN" >&2 2>&1 || { echo "✗ lbp deploy failed" >&2; exit 1; }
+wait_block
 LBP_ID=$(lpad program-id lbp --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
 
 # --- wlez (native-LEZ collateral): deploy so `wrap`/`create-token-sale` work ---
 echo ">> deploying wlez program (own block)"
 WLEZ_BIN="$PROG/artifacts/lpad/wlez.bin"
-[ -f "$WLEZ_BIN" ] && { w deploy-program "$WLEZ_BIN" >&2 2>&1 || true; sleep 20; echo "   wlez deployed"; } \
+[ -f "$WLEZ_BIN" ] && { w deploy-program "$WLEZ_BIN" >&2 2>&1 || { echo "✗ wlez deploy failed" >&2; exit 1; }; wait_block; echo "   wlez deployed"; } \
   || echo "   (wlez.bin missing - skip; build: bash scripts/build-guests.sh)"
 
 # --- ata (Associated Token Accounts) -----------------------------------------
@@ -205,7 +266,7 @@ lpad lbp create-sale --program "$LBP_ID" \
   --creator "$CREATOR" --token-deposit "$LBP_DEPOSIT" --collateral-seed "$LBP_SEED" \
   --w-start 0.9 --w-end 0.1 --t-start "$LBP_TSTART" --t-end "$LBP_TEND" \
   --fee-bps "$FEE_BPS" --nonce "$NONCE" >&2
-sleep 16
+wait_block
 LBP_POOL_ID=$(lpad lbp ids --program "$LBP_ID" --token-def "$PROJ_DEF" \
   --collateral-def "$COLL_DEF" --creator "$CREATOR" --nonce "$NONCE" --json \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["pool"])')
