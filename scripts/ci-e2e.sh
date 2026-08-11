@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# LPAD CI gate: unit tests (no zkVM) + guest-artifact freshness + in-process E2E.
-# No sequencer involved: step 3 drives the LEZ state machine directly.
+# LPAD CI gate: unit tests (no zkVM) + chain parity + artifact/ABI drift +
+# in-process E2E. No sequencer involved: step 3 drives the LEZ state machine
+# directly, and the parity checks compare committed constants, not live RPC.
 # Mirrors the ldex ci-e2e.sh. Run from the repo root.
 set -euo pipefail
 
@@ -49,7 +50,6 @@ echo "== 1c. SDK chain-parity (the LEZ pin vs what the networks actually run) ==
 echo "== 2. Guest artifacts present =="
 # The committed ELFs under artifacts/lpad/ ARE the deployed programs: their RISC0
 # image ids are the on-chain program ids, baked into the SDK at compile time.
-#
 for g in bonding_curve lbp wlez; do
   [ -f "$PROG/artifacts/lpad/${g}.bin" ] || \
     fail "missing artifacts/lpad/${g}.bin - run scripts/build-guests.sh"
