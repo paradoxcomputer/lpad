@@ -125,7 +125,13 @@ lpad my-pools
 ```
 
 ### `lpad program-id` · `[offline]`
-Print a program's deployed id (RISC0 image id) from its guest ELF.
+Print a program's deployed id (RISC0 image id) from its guest ELF. The id is a
+compile-time constant - the ELFs are committed and embedded - so this needs no
+wallet and no chain.
+
+`wlez` additionally prints the two PDAs it owns (the WLEZ definition and the
+vault), derived from the program id alone. They are what a deployment check has to
+work with: unlike a sale or a pool, nothing records a wlez account id anywhere.
 
 | Arg | Req | Meaning |
 |---|---|---|
@@ -134,6 +140,7 @@ Print a program's deployed id (RISC0 image id) from its guest ELF.
 lpad program-id bc
 lpad program-id lbp
 lpad program-id ata
+lpad program-id wlez --json   # {"program":"wlez","program_id":"…","definition":"…","vault":"…"}
 ```
 
 ---
