@@ -289,6 +289,22 @@ pub fn ata_program_id() -> Result<ProgramId> {
     Ok(programs::ata().id())
 }
 
+/// The WLEZ definition and vault PDAs, derived from the wlez program id alone.
+///
+/// Free functions rather than [`LpadClient`] methods because they need no wallet
+/// and no chain: they are pure PDA derivation. That is what lets a deployment
+/// check assert wlez is live - unlike the bonding curve and the LBP, wlez owns no
+/// account whose id a bootstrap happens to record, so without these it was the
+/// one deployed program nothing could verify.
+pub fn wlez_definition_id(wlez_program: ProgramId) -> AccountId {
+    wlez_core::get_wlez_definition_id(&wlez_program)
+}
+
+/// See [`wlez_definition_id`].
+pub fn wlez_vault_id(wlez_program: ProgramId) -> AccountId {
+    wlez_core::get_wlez_vault_id(&wlez_program)
+}
+
 // ---------------------------------------------------------------------------
 // Creator argument bundles
 // ---------------------------------------------------------------------------
@@ -348,10 +364,14 @@ pub const PARADOX_SEQUENCER: &str = "https://seq-testnet.paradox.computer";
 /// LEZ wallet's own `NetworkAlias` so the vocabulary matches, with `paradox`
 /// added.
 ///
-/// Both known networks currently run LEZ **v0.2.0**, which is why the crates are
-/// pinned there: v0.2.1 changes the built-in program image ids (token,
-/// authenticated_transfer, the privacy circuit), so a v0.2.1 build cannot
-/// transact against these chains at all.
+/// Both known networks run a LEZ build whose built-in program image ids match
+/// **v0.2.4**, which is why the crates are pinned there. The pin is not
+/// cosmetic: a LEZ version bump changes those ids (token,
+/// authenticated_transfer, clock, the privacy circuit), and a build pinned to a
+/// version the operators have not adopted cannot transact against these chains
+/// at all - it fails as a timeout, not as an error. The `chain_parity` tests at
+/// the bottom of this file assert the equality on every CI run; treat a failure
+/// there as "do not ship this pin", not as a flake.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Network {
     /// `https://testnet.lez.logos.co`
@@ -2015,6 +2035,34 @@ mod chain_parity {
     const DEPLOYED_CLOCK: [u32; 8] = [
         96247601, 2082502477, 822865082, 1048693993, 3544189898, 772921104, 1694408900, 4234239033,
     ];
+
+    /// lpad's OWN three programs, as this workspace resolves them.
+    ///
+    /// `programs/src/lib.rs::pinned_ids_match_artifacts` asserts the same thing,
+    /// but it runs in the `programs` workspace. The id that actually reaches a
+    /// sequencer is the one the CLI embeds, and the CLI is built here - a
+    /// separate workspace with a separate lockfile, which is exactly where a
+    /// divergence would hide. Cheap to assert in both places; catastrophic to
+    /// discover on chain, where a wrong id is not an error but a transaction
+    /// that never lands.
+    #[test]
+    fn lpad_program_ids_match_the_deployed_constants() {
+        assert_eq!(
+            lpad_guests::bonding_curve().id(),
+            lpad_guests::deployed::BONDING_CURVE,
+            "bonding_curve.bin hashes differently in this workspace than in programs/"
+        );
+        assert_eq!(
+            lpad_guests::lbp().id(),
+            lpad_guests::deployed::LBP,
+            "lbp.bin hashes differently in this workspace than in programs/"
+        );
+        assert_eq!(
+            lpad_guests::wlez().id(),
+            lpad_guests::deployed::WLEZ,
+            "wlez.bin hashes differently in this workspace than in programs/"
+        );
+    }
 
     #[test]
     fn builtin_program_ids_match_the_deployed_networks() {

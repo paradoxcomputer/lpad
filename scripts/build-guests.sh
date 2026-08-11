@@ -77,6 +77,34 @@ done
 
 echo
 echo "✓ Guests staged in programs/artifacts/lpad/"
+
+# The ABIs embed the program ids, so a guest rebuild that changes an ELF leaves
+# programs/artifacts/zonescan-program-schemas.json pointing at ids nobody
+# deployed - and an indexer keyed on those ids just sees no transactions, with no
+# error anywhere. Regenerate here so the two can never be committed out of step.
+LPAD_BIN_PATH="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
+if [ -x "$LPAD_BIN_PATH" ]; then
+    echo "  regenerating the ABIs against the new ids..."
+    # The CLI embeds the ELFs at compile time, so it has to be rebuilt before it
+    # can report the NEW ids - otherwise the ABIs would carry the old ones.
+    ( cd "$REPO/cli" && RISC0_SKIP_BUILD=1 cargo build --release --bin lpad ) \
+        || { echo "✗ could not rebuild the CLI; ABIs left untouched" >&2; exit 1; }
+    bash "$REPO/scripts/build-abi.sh" || exit 1
+else
+    echo "  !! cli/target/release/lpad not built - ABIs NOT regenerated." >&2
+    echo "     If any .bin changed, run this before committing:" >&2
+    echo "       (cd cli && cargo build --release --bin lpad) && bash scripts/build-abi.sh" >&2
+fi
+
+echo
+# Was `cargo run --bin lpad-program-ids`, a target that has never existed in this
+# workspace - so the "Image ids" line only ever printed its own fallback.
 echo "  Image ids:"
-(cd "$PROG" && cargo run -q --features artifacts --bin lpad-program-ids 2>/dev/null) || \
-    echo "  (run 'lpad program-id bc|lbp|wlez' to print them)"
+for g in bc lbp wlez; do
+    if [ -x "$LPAD_BIN_PATH" ]; then
+        printf '    %-5s %s\n' "$g" "$("$LPAD_BIN_PATH" program-id "$g" --json \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')"
+    else
+        echo "    (build the CLI, then: lpad program-id $g)"
+    fi
+done

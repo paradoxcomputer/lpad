@@ -55,3 +55,59 @@ jobs:
         env:
           RISC0_SKIP_BUILD: 1
         run: cargo test -p bonding_curve_program -p lbp_program -p wlez_program
+
+  # The single most important release invariant, and until now it was ungated:
+  # does the LEZ version this repo pins agree with what the target sequencers
+  # actually run? sdk/src/lib.rs::chain_parity asserts the pinned LEZ build's
+  # built-in token / authenticated_transfer / clock image ids equal the ones
+  # live on testnet.lez.logos.co and seq-testnet.paradox.computer. When they
+  # disagree every path touching a built-in program is dropped on chain, and the
+  # only symptom is a timeout - so this has to fail here, not in production.
+  #
+  # It is a separate job because `sdk` is its own workspace: `cargo test` in
+  # cli/ builds lpad-sdk but runs only lpad-cli's tests. It is also the heaviest
+  # build in this file - the SDK pulls the LEZ wallet and, transitively, the
+  # whole Logos L1 node crate tree.
+  sdk-chain-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The LEZ wallet links keycard support unconditionally, so libpcsclite is
+      # a hard build dependency of the SDK (see setup.sh).
+      - name: install libpcsclite
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libpcsclite-dev
+      - name: cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('sdk/Cargo.lock') }}
+      - name: SDK chain-parity tests
+        working-directory: sdk
+        env:
+          RISC0_SKIP_BUILD: 1
+        run: cargo test
+
+  # Dependency advisories, with the ignore list actually applied. The config has
+  # to live at .cargo/audit.toml - cargo-audit has no --config flag, and the `-c`
+  # it does have is --color, which is why the invocation this repo used to
+  # document silently never applied it.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cache cargo bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-audit-bin
+      - name: install cargo-audit
+        run: command -v cargo-audit || cargo install cargo-audit --locked
+      - name: audit all three lockfiles
+        run: bash scripts/audit.sh
