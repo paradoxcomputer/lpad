@@ -1,0 +1,44 @@
+# cargo-audit configuration for LPAD.
+#
+# This lives at `.cargo/audit.toml` because that is the ONLY place cargo-audit
+# looks. It has no `--config` flag, and the `-c` it does have is `--color`: the
+# invocation this file used to document (`cargo audit -c audit.toml -f ...`)
+# fails outright with "invalid value 'audit.toml' for '--color'", so for as long
+# as the config sat in the repo root the ignore list below was never applied.
+#
+#   bash scripts/audit.sh          # all three lockfiles, run from the repo root
+#
+# Every advisory ignored below is transitive through the LEZ stack (pulled from
+# the published git tag), the logos-blockchain networking crates, or the RISC
+# Zero build-time toolchain - with ONE exception, `number_prefix`, which arrives
+# through lpad's own `indicatif` dependency in the CLI. `cargo tree -i <crate>`
+# is how to re-check provenance. Re-review this list whenever the LEZ pin
+# (v0.2.4) is bumped.
+[advisories]
+ignore = [
+    # --- vulnerabilities -----------------------------------------------------
+    "RUSTSEC-2023-0071", # rsa 0.9.x Marvin timing sidechannel - via rzup -> risc0-build, a build-time tool, not a runtime signing path
+    "RUSTSEC-2026-0118", # hickory-proto DNS DoS - via the logos-blockchain libp2p networking stack
+    "RUSTSEC-2026-0119", # hickory-proto DNS DoS - same path
+    # tracing-subscriber ANSI log injection, two distinct transitive instances:
+    #   (1) cli/ and sdk/ on 0.3.x - the fix is an upstream bump to >=0.3.20;
+    #   (2) all three lockfiles on 0.2.25 via ark-relations (std feature) in the
+    #       arkworks circuit stack. The 0.2 line has no patched release, and it is
+    #       reachable only from arkworks' in-circuit R1CS tracing layer, never
+    #       from user-facing terminal output.
+    "RUSTSEC-2025-0055",
+
+    # --- unmaintained / unsound ---------------------------------------------
+    "RUSTSEC-2026-0002", # lru unsoundness - transitive via the logos-blockchain stack
+    "RUSTSEC-2025-0141", # bincode 1.3.3 unmaintained - transitive
+    "RUSTSEC-2024-0388", # derivative unmaintained - transitive (arkworks / logos-blockchain)
+    "RUSTSEC-2024-0436", # paste unmaintained - transitive
+    "RUSTSEC-2024-0370", # proc-macro-error unmaintained - transitive, build-time proc macros only
+    # number_prefix unmaintained. The ONE advisory here that is not purely
+    # upstream: it comes from `indicatif`, the CLI's own progress-bar dependency.
+    # It is a formatting helper for byte/SI prefixes with no unsafe code and no
+    # input from the chain, so it is accepted rather than fixed; the real
+    # remediation is indicatif dropping it (it does, from 0.18), which is a
+    # deliberate post-release bump rather than something to slip into a tag.
+    "RUSTSEC-2025-0119",
+]

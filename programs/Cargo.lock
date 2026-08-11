@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "bonding_curve_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "lee_core",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "bonding_curve_program"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "associated_token_account_core",
  "bonding_curve_core",
@@ -1303,7 +1303,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.3",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1454,7 +1454,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1655,7 +1655,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2594,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "integration_tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "associated_token_account_core",
  "bonding_curve_core",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "lbp_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "lbp_program"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "associated_token_account_core",
  "borsh",
@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "lpad_guests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bonding_curve_core",
  "bonding_curve_program",
@@ -4468,7 +4468,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5156,7 +5156,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5788,7 +5788,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6443,7 +6443,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7584,7 +7584,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wlez_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lee_core",
  "risc0-zkvm",
@@ -7593,7 +7593,7 @@ dependencies = [
 
 [[package]]
 name = "wlez_program"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "authenticated_transfer_core",
  "borsh",

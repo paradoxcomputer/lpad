@@ -12,7 +12,7 @@
 # `artifacts` is not a default feature (upstream: risc0#3772).
 [package]
 name = "lpad_guests"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -61,7 +61,14 @@ wlez_core = { workspace = true, optional = true }
 wlez_program = { workspace = true, optional = true }
 
 [build-dependencies]
-risc0-binfmt = { version = "3.0.2", optional = true }
+# Pinned exactly, like `risc0-zkvm` below, because this crate is what turns a
+# committed guest ELF into its image id - and that id IS the on-chain program
+# address. A caret range let the three workspaces resolve it independently
+# (programs/ was on 3.0.5 while cli/ and sdk/ were on 3.0.4), so a future patch
+# release that changed the hashing would have silently given the CLI a different
+# program id from the one the tests assert. The ids agree today; the pin is what
+# keeps that from being luck.
+risc0-binfmt = { version = "=3.0.5", optional = true }
 
 [workspace]
 members = [
@@ -93,7 +100,6 @@ programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git
 token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 ata_core = { package = "associated_token_account_core", git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 authenticated_transfer_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4" }
 
 bonding_curve_core = { path = "bonding_curve/core" }
 bonding_curve_program = { path = "bonding_curve" }
