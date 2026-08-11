@@ -22,7 +22,13 @@
 #   LPAD_WALLET_HOME     default ~/.lpad
 #   LPAD_WALLET_PW       default lpaddev
 #   LPAD_FUNDER          existing funded account ("Public/..."); skips the faucet
-#   LPAD_FUNDER_KEY      private key to import for LPAD_FUNDER
+#   LPAD_FUNDER_KEY      private key to import for LPAD_FUNDER. NOTE: the LEZ
+#                        wallet only accepts this as `--private-key <hex>`, i.e.
+#                        on argv, where it is readable in the process table by any
+#                        local user for the length of that call. The wallet
+#                        password goes over stdin, but there is no equivalent for
+#                        the key. Use a testnet-only key here; the default path
+#                        (the pinata faucet) needs no key at all.
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 
