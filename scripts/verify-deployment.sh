@@ -43,6 +43,28 @@ rpc() {
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" 2>/dev/null
 }
 
+# Account ids reach this script in whichever form produced them: the lpad CLI
+# prints `Public/<base58>`, bootstrap has recorded sale/pool ids as raw hex, and
+# `getAccount` accepts ONLY bare base58 (a `Public/` prefix returns
+# `invalid base58: InvalidBase58Character('l', 3)`, and hex contains '0', which
+# is not in the base58 alphabet at all). Normalize before every RPC call -
+# otherwise a live account reports as ABSENT and a green run means nothing.
+norm_acct() {
+  python3 -c '
+import sys
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+s = sys.argv[1].split("/", 1)[-1]
+if len(s) == 64 and all(c in "0123456789abcdefABCDEF" for c in s):
+    b = bytes.fromhex(s)
+    n = int.from_bytes(b, "big")
+    o = ""
+    while n:
+        n, r = divmod(n, 58)
+        o = B58[r] + o
+    s = "1" * (len(b) - len(b.lstrip(b"\0"))) + o
+print(s)' "$1"
+}
+
 # hex program id -> the [u32;8] the RPC returns, so they can be compared.
 hex_to_words() {
   python3 -c '
@@ -61,6 +83,7 @@ h=$(rpc getLastBlockId '[]' | python3 -c 'import sys,json;print(json.load(sys.st
 check_pda() {
   local label="$1" acct="$2" want_hex="$3"
   local got want
+  acct=$(norm_acct "$acct")
   got=$(rpc getAccount "[\"$acct\"]" \
     | python3 -c 'import sys,json
 try:

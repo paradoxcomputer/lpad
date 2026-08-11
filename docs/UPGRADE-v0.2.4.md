@@ -345,8 +345,47 @@ also what keeps it clear of `validate_execution` rule 7, since it sets
 
 **A rejected transaction looks like a timeout.** A transaction the sequencer drops
 never appears on chain, and the wallet reports only `Error: All pollers failed`.
-To tell rejection from slowness, query `getTransaction` for the hash a few blocks
-later - absent means rejected, and no amount of extra patience will help.
+
+Do NOT conclude "rejected" from `getTransaction` returning nothing: that RPC has a
+bounded lookback, so a transaction that WAS included ages out of the window and
+then reads as absent. (Observed directly: the bonding_curve deploy reported
+"included in block 1138", and ~68 blocks later `getTransaction` on the same hash
+returned nothing, with the chain healthy and never reset.) The reliable signal is
+whether the wallet ever printed "Transaction is included in block N" - it polls
+until it sees inclusion.
+
+The same lookback explains a confusing deploy behaviour: because a deploy tx is a
+pure function of its bytecode, re-deploying is idempotent only while the ORIGINAL
+inclusion is still inside the poll window. After that, the duplicate is never
+re-included and the deploy appears to fail even though the program is deployed and
+working.
+
+**Verify a deploy by reading the block, not by trusting the report.** An earlier
+revision of this document concluded from the above that "a deploy step must
+tolerate failure and let a subsequent real call (e.g. `create-sale`) be the proof
+of deployment". That is wrong, and it cost a session's debugging:
+
+  * a call against a *missing* program is dropped from the mempool and reports
+    the same `All pollers failed` as any other non-inclusion, so `create-sale`
+    does **not** distinguish "not deployed" from "slow chain". There is no
+    "Unknown program" error to wait for.
+  * the reported block id is not evidence either. Re-deploying an unchanged guest
+    resolves `getTransaction` to the original deploy and prints *its* block:
+    `wlez` "deployed into block 1259" in 5 seconds while the head was 1408.
+
+Concretely: `lbp` reported "included in block 1161" on the Logos testnet and was
+never actually deployed. Every `lbp create-sale` for the rest of that session was
+silently discarded, which read as poll flakiness. Scanning blocks 1000-1397 for
+the committed artifact bytes found `bonding_curve` (1138) and `wlez` (1259) but no
+`lbp` at all - while all three were present on Paradox (279/280/281), so it was a
+single dropped transaction, not a build or id problem.
+
+`bootstrap.sh::deploy_verified` now fetches the block the wallet named and asserts
+the guest's own ELF bytes are inside it. That is cheap (one block), positive, and
+tells "already deployed" (old block, bytes present) apart from "never landed"
+(bytes absent -> hard fail). `scripts/verify-deployment.sh` is the standing check;
+note `getAccount` takes only bare base58, so it normalizes ids first - passing a
+`Public/`-prefixed or hex id makes a live account read as ABSENT.
 
 **Block time is ~46-50s on both public testnets**, not the 15s a local dev chain
 used. Two knock-on effects:

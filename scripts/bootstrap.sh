@@ -104,10 +104,22 @@ echo ">> network: $NETWORK ($SEQ_ADDR)   wallet home: $HOME_DIR   proofs: REAL"
 w() { printf '%s\n' "$PW" | "$WALLET" "$@"; }
 
 # Current sequencer height.
+# MUST NOT fail. `set -euo pipefail` is in force and this is a `curl | python3`
+# pipeline, so any transient RPC hiccup - a 502 page, a truncated body, a timeout -
+# makes python raise, which fails the pipeline. Every caller writes
+# `h=$(seq_height)`, and a command substitution that exits non-zero fails the
+# ASSIGNMENT, which `set -e` turns into an immediate abort of the whole bootstrap.
+# Both streams are redirected to /dev/null, so there is not even an error message:
+# the run simply stops with exit 1 in the middle, having already spent 10+ minutes
+# and a faucet claim. That silently killed two consecutive paradox bootstraps
+# immediately after a successful transfer, and cost a traced re-run to find.
+# Callers all already handle an empty answer (`[ -n "$h" ]`), so degrade to empty
+# rather than exploding.
 seq_height() {
   timeout 60 curl -s -X POST "$SEQ_ADDR" -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"getLastBlockId","params":[]}' 2>/dev/null \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"])' 2>/dev/null
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"])' 2>/dev/null \
+    || true
 }
 
 # Block until the chain advances at least one block, so the next step sees the
@@ -179,10 +191,179 @@ w token new --name COLLAT --total-supply "$COLL_SUPPLY" \
   --definition-account-id "$COLL_DEF" --supply-account-id "$COLL_HOLD" >&2
 wait_block
 
+if [ "${LPAD_SKIP_DEPLOY:-0}" = "1" ]; then echo ">> skipping deploys (LPAD_SKIP_DEPLOY=1; programs already on chain)"; fi
+
+# Deploy a guest and PROVE the bytes are on chain.
+#
+# `deploy-program` exiting 0 is not proof, and neither is the block id it prints:
+#
+#   - The deploy tx hash is derived from the ELF alone, so re-deploying an
+#     unchanged guest resolves `getTransaction` to the ORIGINAL deploy and
+#     reports that old block. wlez re-deployed in 5s "into block 1259" while the
+#     chain head was 1408.
+#   - A deploy that never lands surfaces only as the generic "All pollers
+#     failed", indistinguishable from a slow chain. This used to be tolerated
+#     with the rationale that create-sale would "fail loudly with 'Unknown
+#     program'". It does not: a tx against a missing program is dropped from the
+#     mempool and also reports "All pollers failed". lbp reported inclusion in
+#     block 1161, was never actually deployed, and every later `lbp create-sale`
+#     was silently discarded - which read as poll flakiness for a whole session.
+#
+# So check the one thing that cannot lie: are the ELF's own bytes in a block?
+#
+# Two-stage, because a re-deploy legitimately may never report an inclusion at
+# all. The deploy tx hash is a pure function of the bytecode, so a duplicate is
+# not re-included; once the ORIGINAL inclusion ages out of `getTransaction`'s
+# bounded lookback, the wallet polls to exhaustion and reports nothing - even
+# though the program is deployed and working. (Live example: after the Logos
+# testnet reset kept its block store but wiped account state, block 1138 still
+# held bonding_curve, so re-deploying it could only ever time out.) Failing there
+# would be a false alarm, and it would make this stricter than the tolerant code
+# it replaced - trading a silent miss for a spurious abort.
+#
+#   stage 1  the block the wallet named (cheap, the common case)
+#   stage 2  scan back from head for the bytes (only if stage 1 found nothing)
+#
+# Stage 2's range is bounded and always reported, so a "deployed" verdict can
+# never come from a scan that quietly gave up early.
+# Which guests are ALREADY on chain, as "<name> <block>" lines. Filled by
+# prescan_deployed(); consulted by deploy_verified() to skip a pointless deploy.
+DEPLOY_PRESCAN=""
+
+# Scan the recent chain ONCE for all three guests before deploying anything.
+#
+# Without this the order is deploy-then-verify, and re-deploying a guest that is
+# already on chain is the worst case: the duplicate is never re-included, so the
+# wallet polls its entire budget (seq_poll_max_retries x seq_poll_timeout = 30 min
+# here) to prove nothing, per program. Measured: testnet's bonding_curve sat at
+# block 1138 after a reset kept the block store, and re-deploying it burned 30 min
+# before the fallback scan found it.
+#
+# One pass fetches each block once and tests all three probes together - 400 reads
+# instead of 1200 - so knowing up front is cheaper than one futile poll.
+prescan_deployed() {
+  [ "${LPAD_SKIP_DEPLOY:-0}" = "1" ] && return 0
+  echo ">> pre-scanning the chain for already-deployed guests" >&2
+  DEPLOY_PRESCAN=$(python3 - "$SEQ_ADDR" "${LPAD_DEPLOY_SCAN_BLOCKS:-400}" "$PROG/artifacts/lpad" <<'PY'
+import base64, json, os, sys, urllib.request
+seq, span, artdir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+
+def rpc(method, params):
+    req = urllib.request.Request(
+        seq, json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+        {"content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120)).get("result")
+
+probes = {}
+for n in ("bonding_curve", "lbp", "wlez"):
+    p = os.path.join(artdir, f"{n}.bin")
+    if os.path.exists(p):
+        elf = open(p, "rb").read()
+        probes[n] = elf[len(elf) // 2 : len(elf) // 2 + 64]
+
+try:
+    head = rpc("getLastBlockId", [])
+except Exception:
+    head = None
+if not isinstance(head, int):
+    # Unknown head: say nothing, so every guest is treated as not-yet-deployed and
+    # the normal deploy+verify path runs. Never guess "deployed".
+    print("# head unreadable - no prescan", file=sys.stderr)
+    sys.exit(0)
+
+low = max(0, head - span)
+found = {}
+for b in range(head, low - 1, -1):
+    if len(found) == len(probes):
+        break
+    try:
+        r = rpc("getBlock", [b])
+    except Exception:
+        continue
+    if not r:
+        continue
+    raw = base64.b64decode(r)
+    if b"\x7fELF" not in raw:      # cheap reject: only deploy blocks carry an ELF
+        continue
+    for n, pr in probes.items():
+        if n not in found and pr in raw:
+            found[n] = b
+print(f"# scanned blocks {low}..{head}: "
+      + (", ".join(f"{n}@{b}" for n, b in sorted(found.items())) or "none of ours"),
+      file=sys.stderr)
+for n, b in found.items():
+    print(f"{n} {b}")
+PY
+) || DEPLOY_PRESCAN=""
+}
+
+deploy_verified() {
+  local bin="$1" name="$2" out blk pre
+  [ -f "$bin" ] || { echo "missing $bin (build: bash scripts/build-guests.sh)" >&2; return 1; }
+  if [ "${LPAD_SKIP_DEPLOY:-0}" = "1" ]; then echo "   (skipping $name deploy)"; return 0; fi
+  # Already on chain? Then a deploy can only time out - skip straight to verified.
+  pre=$(printf '%s\n' "$DEPLOY_PRESCAN" | awk -v n="$name" '$1 == n { print $2 }' | head -1)
+  if [ -n "$pre" ]; then
+    echo "   ✓ $name already on chain in block $pre - deploy skipped (a duplicate is never re-included)"
+    return 0
+  fi
+  out=$(w deploy-program "$bin" 2>&1) || true
+  printf '%s\n' "$out" >&2
+  blk=$(printf '%s\n' "$out" | sed -n 's/.*included in block \([0-9]\{1,\}\).*/\1/p' | tail -1)
+  python3 - "$SEQ_ADDR" "${blk:-0}" "$bin" "$name" "${LPAD_DEPLOY_SCAN_BLOCKS:-400}" <<'PY'
+import base64, json, sys, urllib.request
+seq, blk, bin_path, name, span = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5])
+elf = open(bin_path, "rb").read()
+# A chunk from deep inside the ELF: distinctive enough to identify this guest
+# (two unrelated guests can share a size - testnet 1107 and paradox 210 both hold
+# a 447135-byte non-lpad ELF close to wlez.bin's 447820), and far cheaper than
+# comparing the whole 0.5 MB payload.
+probe = elf[len(elf) // 2 : len(elf) // 2 + 64]
+
+def rpc(method, params):
+    req = urllib.request.Request(
+        seq, json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+        {"content-type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120)).get("result")
+
+def has_elf(b):
+    try:
+        r = rpc("getBlock", [b])
+    except Exception:
+        return False
+    return bool(r) and probe in base64.b64decode(r)
+
+if blk and has_elf(blk):
+    print(f"   ✓ {name} verified on chain in block {blk} ({len(elf)} bytes)")
+    sys.exit(0)
+
+why = (f"the wallet named block {blk}, but its bytes are not there"
+       if blk else "the deploy never reported an inclusion block")
+head = rpc("getLastBlockId", [])
+if not isinstance(head, int):
+    sys.exit(f"✗ {name}: {why}, and the head is unreadable - cannot verify")
+low = max(0, head - span)
+print(f"   .. {why}; scanning blocks {low}..{head} for {name}'s bytes")
+for b in range(head, low - 1, -1):
+    if has_elf(b):
+        print(f"   ✓ {name} already on chain in block {b} ({len(elf)} bytes) - duplicate deploy "
+              f"was correctly not re-included")
+        sys.exit(0)
+sys.exit(
+    f"✗ {name}: {why}, and its bytes are in NO block in {low}..{head} "
+    f"({span} scanned).\n"
+    f"  Treat it as NOT deployed: every transaction against this program will be\n"
+    f"  silently dropped from the mempool and read as a timeout. Re-run the deploy.\n"
+    f"  (If it was deployed longer ago than {span} blocks, raise LPAD_DEPLOY_SCAN_BLOCKS.)"
+)
+PY
+}
+
+prescan_deployed
+
 echo ">> deploying bonding_curve program (own block)"
 BC_BIN="$PROG/artifacts/lpad/bonding_curve.bin"
-[ -f "$BC_BIN" ] || { echo "missing $BC_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
-w deploy-program "$BC_BIN" >&2 2>&1 || { echo "✗ bonding_curve deploy failed" >&2; exit 1; }
+deploy_verified "$BC_BIN" bonding_curve || exit 1
 wait_block
 BC_ID=$(lpad program-id bc --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
 echo "   bonding_curve program id = $BC_ID"
@@ -206,9 +387,51 @@ for v in TREASURY BUYER_COLL BUYER_TOK; do
 done
 
 echo ">> funding treasury + public buyer holdings"
-w token send --from "$COLL_HOLD" --to "$TREASURY"   --amount "$INIT_DUST"  >&2 || true; wait_block
-w token send --from "$COLL_HOLD" --to "$BUYER_COLL"  --amount "$BUYER_FUND" >&2 || true; wait_block
-w token send --from "$PROJ_HOLD" --to "$BUYER_TOK"   --amount "$INIT_DUST"  >&2 || true; wait_block
+
+# Send, then PROVE the recipient's balance is there.
+#
+# These used to be `|| true; wait_block`, which silently tolerated a lost
+# transfer. That is much worse than it looks: an unfunded buyer holding does not
+# fail at the point of the transfer, it fails much later inside `bc buy`, where
+# the program panics on insufficient balance, the sequencer drops the tx, and the
+# CLI reports the usual indistinguishable "All pollers failed". Observed exactly
+# once on paradox: of these three sends the two 1-unit dust transfers landed and
+# the 100000 buyer-collateral one vanished, so BUYER_COLL sat at 0 and every buy
+# in the sweep hung for ~15 min each against a chain that was perfectly healthy.
+#
+# `|| true` is still right for the SEND (a duplicate/late inclusion is not fatal),
+# but the balance check afterwards is what turns a lost transfer into a loud,
+# immediate failure instead of a mystery 40 minutes downstream.
+fund_verified() {
+  local from="$1" to="$2" amount="$3" label="$4" got
+  w token send --from "$from" --to "$to" --amount "$amount" >&2 || true
+  wait_block
+  got=$(python3 - "$SEQ_ADDR" "$to" <<'PY'
+import json, sys, urllib.request
+addr, acct = sys.argv[1], sys.argv[2].split("/", 1)[-1]
+try:
+    req = urllib.request.Request(
+        addr, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getAccount", "params": [acct]}).encode(),
+        {"content-type": "application/json"})
+    d = bytes((json.load(urllib.request.urlopen(req, timeout=60)).get("result") or {}).get("data") or b"")
+    # TokenHolding::Fungible == [1-byte borsh tag][32-byte definition id][u128 LE balance]
+    print(int.from_bytes(d[33:49], "little") if len(d) >= 49 else -1)
+except Exception:
+    print(-1)
+PY
+)
+  if [ "${got:--1}" -lt "$amount" ]; then
+    echo "✗ $label: expected >= $amount in $to after funding, chain says ${got}." >&2
+    echo "  The transfer was lost. Left unchecked this surfaces much later as a hung" >&2
+    echo "  'bc buy'/'lbp buy' (the program panics on insufficient balance, the tx is" >&2
+    echo "  dropped, and the CLI only ever reports 'All pollers failed')." >&2
+    return 1
+  fi
+  echo "   ✓ $label funded ($got in $to)" >&2
+}
+fund_verified "$COLL_HOLD" "$TREASURY"   "$INIT_DUST"  "treasury"         || exit 1
+fund_verified "$COLL_HOLD" "$BUYER_COLL" "$BUYER_FUND" "buyer collateral" || exit 1
+fund_verified "$PROJ_HOLD" "$BUYER_TOK"  "$INIT_DUST"  "buyer token"      || exit 1
 
 if [ "${LPAD_SKIP_PRIVATE:-0}" = "1" ]; then
   echo ">> skipping shielded holdings (LPAD_SKIP_PRIVATE=1)"
@@ -240,16 +463,19 @@ echo "   sale id = $SALE_ID"
 # --- LBP (RFP-016): deploy the program + create a time-driven sale ---------
 echo ">> deploying lbp program (own block)"
 LBP_BIN="$PROG/artifacts/lpad/lbp.bin"
-[ -f "$LBP_BIN" ] || { echo "missing $LBP_BIN (build: bash scripts/build-guests.sh)" >&2; exit 1; }
-w deploy-program "$LBP_BIN" >&2 2>&1 || { echo "✗ lbp deploy failed" >&2; exit 1; }
+deploy_verified "$LBP_BIN" lbp || exit 1
 wait_block
 LBP_ID=$(lpad program-id lbp --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["program_id"])')
 
 # --- wlez (native-LEZ collateral): deploy so `wrap`/`create-token-sale` work ---
 echo ">> deploying wlez program (own block)"
 WLEZ_BIN="$PROG/artifacts/lpad/wlez.bin"
-[ -f "$WLEZ_BIN" ] && { w deploy-program "$WLEZ_BIN" >&2 2>&1 || { echo "✗ wlez deploy failed" >&2; exit 1; }; wait_block; echo "   wlez deployed"; } \
-  || echo "   (wlez.bin missing - skip; build: bash scripts/build-guests.sh)"
+if [ -f "$WLEZ_BIN" ]; then
+  deploy_verified "$WLEZ_BIN" wlez || exit 1
+  wait_block
+else
+  echo "   (wlez.bin missing - skip; build: bash scripts/build-guests.sh)"
+fi
 
 # --- ata (Associated Token Accounts) -----------------------------------------
 # Nothing to deploy: lpad used to ship a hardened fork of the ATA program, but
