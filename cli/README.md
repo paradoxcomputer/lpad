@@ -17,6 +17,7 @@ plus the shared collateral (`wlez`), shielding, and **Associated Token Account
 - [Wallet & discovery](#wallet--discovery)
 - [Collateral & shielding](#collateral--shielding)
 - [Associated Token Accounts (ATAs)](#associated-token-accounts-atas)
+- [Plain token holdings](#plain-token-holdings)
 - [Offline math & address derivation](#offline-math--address-derivation)
 - [Bonding curve (RFP-015)](#bonding-curve-rfp-015)
 - [LBP (RFP-016)](#lbp-rfp-016)
@@ -205,13 +206,16 @@ legs are routed through the on-chain `ata` program (which internally authorizes
 the spend via the ATA's PDA when the named owner signs), while the program's
 vaults stay program-owned PDAs.
 
-Shared ATA flags (on every `*-ata` command):
+Shared ATA flags:
 
-| Flag | Req | Default | Meaning |
-|---|---|---|---|
-| `--owner <ID>` | no | wallet default signer | The account that owns the ATAs (and signs). |
-| `--ata-program <ID>` | no | ata image id | The deployed ATA program id. |
-| `--fund-from <ID>` | no | - | Move the input amount from this keypair holding into the owner's input ATA first (so you don't pre-fund it). |
+| Flag | Req | Default | Meaning | On |
+|---|---|---|---|---|
+| `--owner <ID>` | no | wallet default signer | The account that owns the ATAs (and signs). | all |
+| `--ata-program <ID>` | no | ata image id | The deployed ATA program id. | all |
+| `--fund-from <ID>` | no | - | Move the input amount from this keypair holding into the owner's input ATA first (so you don't pre-fund it). | the `*-ata` trades only |
+
+`--fund-from` is on `bc buy-ata`, `bc sell-ata` and `lbp buy-ata`. `create-ata`
+does not take it: it only claims the ATA, and there is no input amount to move.
 
 ### `lpad create-ata` · `[online]`
 Create your Associated Token Account for a token definition (idempotent - a no-op
@@ -230,6 +234,33 @@ lpad create-ata --token-def <WLEZ_DEF> --owner <OWNER>
 
 > `bc buy-ata`, `bc sell-ata`, and `lbp buy-ata` are documented under their
 > respective program sections below.
+
+---
+
+## Plain token holdings
+
+### `lpad init-holding` · `[online]`
+Create **and initialise** a fresh public token holding for a token definition, and
+print its id.
+
+This exists because a token transfer to a never-initialised holding is *rejected*:
+the token program claims the recipient with `Claim::Authorized`, and the runtime
+grants that only for an account the transaction signed for - which the wallet does
+not do for transfer recipients. The LEZ wallet has no equivalent subcommand, so
+this is how you make a recipient before sending to it. The rejection is silent
+(the transaction is dropped from the mempool), so skipping this step surfaces much
+later as an unexplained timeout.
+
+Prefer an ATA (`create-ata`) when the holding is meant to be discoverable from an
+owner + token definition; use `init-holding` for a bare keypair holding.
+
+| Flag | Req | Default | Meaning |
+|---|---|---|---|
+| `--token-def <ID>` | yes | - | Token definition the holding is for. |
+```bash
+lpad init-holding --token-def <COLL_DEF>
+lpad init-holding --token-def <COLL_DEF> --json   # {"holding": "..."}
+```
 
 ---
 

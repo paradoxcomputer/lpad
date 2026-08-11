@@ -3,7 +3,17 @@
 > **Now pinned at `v0.2.4`.** Both sequencers were reset and upgraded (heights
 > dropped from 49192/5364 to ~1085/203), and a new L1 came with them
 > (`logos-blockchain` rev `d8711bbc` → `e2a1c3b7`, inherited transitively — lpad
-> has no direct L1 dependency).
+> has no direct L1 dependency and must not acquire one).
+>
+> For the record, since a bare hash says nothing about currency: `e2a1c3b7` sits
+> **19 commits ahead** of the latest L1 node release,
+> [`0.2.1`](https://github.com/logos-blockchain/logos-blockchain/releases/tag/0.2.1)
+> (2026-08-05, commit `964e08fc`), and 8 behind — and those 8 are genesis-ceremony,
+> deployment-config and version-bump commits on the release branch, no code. So
+> LEZ `v0.2.4` rides post-`0.2.1` L1 master, while the running networks were
+> genesis'd from the `0.2.1` release. Pinning the LEZ *tag* is what keeps lpad on
+> the same side of that as the sequencers; overriding the L1 rev independently
+> would not.
 >
 > The chains' built-in ids now match `v0.2.4` exactly:
 >
@@ -217,20 +227,29 @@ zero spendable funds. `bootstrap.sh` now does
 `supply_bridge_lock_holding`). `bedrock_config.funding_key` is a new **required**
 field even in standalone mode, where it is never read. The config also moved to
 `lez/sequencer/service/configs/debug/sequencer_config.json`, and
-`--listen-address` now defaults to `0.0.0.0` — `run-sequencer.sh` passes
-`127.0.0.1` explicitly since the RPC has no caller auth.
+`--listen-address` now defaults to `0.0.0.0`.
 
-## 9. Capability lost: IDL generation
+This section is retained as a record of the schema change only. lpad no longer
+runs a sequencer of its own: `run-sequencer.sh` was deleted (§11) and lpad targets
+the two public testnets, so nothing here is a step you perform.
+
+## 9. IDL generation replaced by source-generated ABIs
 
 `programs/tools/idl-gen` depended on `spel-framework-core`'s `idl-gen` feature and
-has been deleted; v0.2.1 has no IDL generator. The committed
-`programs/artifacts/{bonding_curve,lbp}-idl.json` are still accurate (neither
-`Instruction` enum changed) but are now **hand-maintained**, and the CI drift
-check has been replaced by a guest-artifact presence/reproducibility check.
+was deleted with the v0.2.1 migration; v0.2.4 still ships no IDL generator. The
+capability was replaced rather than lost: `scripts/build-abi.sh` derives
+`programs/artifacts/{bonding_curve,lbp,wlez}-abi.json` — bare zonescan type
+descriptors — plus the ready-to-paste
+`programs/artifacts/zonescan-program-schemas.json`, straight from the
+`Instruction` enums in the `*_core` crates, so an ABI cannot drift from the
+program it describes.
 
-If client-facing IDLs matter going forward, the options are to hand-maintain
-them, write a small generator over the `Instruction` enums in the `*_core`
-crates, or drop them.
+The hand-maintained `programs/artifacts/*-idl.json` files are gone, and they were
+not accurate when they went: declaration order is the wire discriminant, and the
+old files listed some variants out of order. `scripts/ci-e2e.sh` now regenerates
+the ABIs and fails on a diff, and `scripts/build-guests.sh` regenerates them after
+any guest rebuild — the ABIs carry the program ids, so a rebuilt ELF would
+otherwise leave an indexer keyed on ids nobody deployed.
 
 ## 10. Build environment
 
@@ -270,10 +289,13 @@ Consequences:
 * **No genesis control.** The hardcoded genesis funder key and `vault claim` only
   worked on a chain we owned. Bootstrap now claims from the **pinata faucet**, or
   uses `$LPAD_FUNDER` / `$LPAD_FUNDER_KEY` if you supply a funded account.
-* **lpad's programs are not deployed on either chain** — bootstrap deploys all
-  three, and their ids are pinned in `lpad_guests::deployed` with a drift-guard
-  test. Rebuilding the artifacts changes those ids, which orphans every existing
-  sale and pool, so treat a diff there as a consensus change.
+* **lpad's programs are not built into either chain** — nothing upstream deploys
+  them, so `bootstrap.sh` does, and their ids are pinned in
+  `lpad_guests::deployed` with a drift-guard test. Rebuilding the artifacts
+  changes those ids, which orphans every existing sale and pool, so treat a diff
+  there as a consensus change. (As of this release all three *are* deployed and
+  live on the Logos testnet — see §13 — and `scripts/verify-deployment.sh` is how
+  to check any chain.)
 * The CI `e2e` job stays hermetic (in-process, dev proofs). A live smoke test is
   opt-in via `workflow_dispatch`, since it needs a funded account and real proving.
 
@@ -310,7 +332,8 @@ program (funded native accounts), or is a PDA the program claims. Rule 7 keys on
 `program_owner == DEFAULT`, so a funded creator never trips it; the filter only
 ever mattered for a bare keypair that had signed but held nothing.
 
-Verified empirically: the full 21-test integration suite passes against the real
+Verified empirically: the full integration suite (21 tests at the time; 22 now,
+after the LBP create-sale path gained end-to-end coverage) passes against the real
 v0.2.4 state machine both with the filter neutralised and with it removed. `wlez`
 had no other dispatch helpers, so its `dispatch.rs` is gone entirely; the
 bonding-curve and LBP modules keep their clock helpers.

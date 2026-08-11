@@ -31,19 +31,48 @@ trader, so the pool stays solvent. License: **MIT OR Apache-2.0**.
 
 ## Build & test
 
-Builds against LEZ **`v0.2.4`**, pulled straight from the published git tag - there is
-no LEZ checkout to wire up and no path-patching. `v0.2.4` matches what both public
-sequencers run (verified against their live built-in program ids), and brings the new
-L1 transitively. See
-[`docs/UPGRADE-v0.2.4.md`](docs/UPGRADE-v0.2.4.md) for the full migration record.
+Builds against LEZ **[`v0.2.4`](https://github.com/logos-blockchain/logos-execution-zone/releases/tag/v0.2.4)**,
+the latest release, pulled straight from the published git tag - so *building* needs no
+LEZ checkout and no path-patching. That tag transitively pins the **Logos L1 node** at
+rev `e2a1c3b7`, which is 19 commits ahead of the latest L1 node release,
+[`0.2.1`](https://github.com/logos-blockchain/logos-blockchain/releases/tag/0.2.1)
+(the 8 commits it lacks are genesis-ceremony and deployment-config only, no code).
+lpad never selects the L1 revision itself; it inherits whatever the pinned LEZ picks,
+which is what keeps it byte-compatible with the sequencers.
 
-Two things beyond `cargo` are required: **Docker** + `cargo-risczero` (only to rebuild
-the zkVM guests, whose prebuilt ELFs are committed), and **libpcsclite** (the v0.2.1
-wallet links keycard support unconditionally). `setup.sh` checks both.
+The pin is load-bearing. A program's RISC0 image id *is* its on-chain address, so a LEZ
+version the operators have not adopted makes every call against a built-in program fail,
+and it fails as a timeout rather than as an error. `sdk/src/lib.rs::chain_parity` asserts
+that this build's `token`, `authenticated_transfer` and `clock` image ids equal the ones
+live on both public sequencers; it runs in CI and in `scripts/ci-e2e.sh`. See
+[`docs/UPGRADE-v0.2.4.md`](docs/UPGRADE-v0.2.4.md) for the full migration record and
+[`CHANGELOG.md`](CHANGELOG.md) for what changed per release.
+
+Two things beyond `cargo` are required to build: **Docker** + `cargo-risczero` (only to
+rebuild the zkVM guests, whose prebuilt ELFs are committed), and **libpcsclite** (the LEZ
+wallet links keycard support unconditionally). `setup.sh` checks both, and on distros that
+ship only the runtime `libpcsclite.so.1` it creates the shim `pcsc-sys` needs and prints
+the one `export` to add.
+
+`scripts/bootstrap.sh` is the one exception to "no LEZ checkout". It does not *build*
+against LEZ, it *drives* it: it shells out to the upstream `wallet` binary for key
+management, deploys and transfers, and seeds its wallet config from
+`lez/wallet/configs/debug/wallet_config.json`. So before bootstrapping, clone LEZ at tag
+`v0.2.4` to `$HOME/lez` (or point `$LPAD_LEZ_DIR` at it) and build the wallet there:
+
+```bash
+git clone --branch v0.2.4 https://github.com/logos-blockchain/logos-execution-zone.git ~/lez
+(cd ~/lez && cargo build --release -p wallet)
+```
+
+`$LPAD_WALLET_BIN` relocates the binary alone; the checkout is still needed for the
+config. Nothing else below touches it - `setup.sh`, `scripts/ci-e2e.sh` and the `cargo
+test` lines are all self-contained.
 
 ```bash
 bash setup.sh                                                 # verify the toolchain
-bash scripts/ci-e2e.sh                                        # full gate: unit + CLI + artifacts + e2e
+bash scripts/ci-e2e.sh                                        # full gate: unit + CLI + SDK chain-parity + ABI/artifact drift + e2e
+bash scripts/audit.sh                                         # cargo-audit over all three lockfiles
 RISC0_SKIP_BUILD=1 cargo test --manifest-path cli/Cargo.toml  # CLI tests (fast)
 cd programs && RISC0_DEV_MODE=1 cargo test --workspace        # tests only - dev/fake proofs for speed; the launchpad itself defaults to real proofs
 bash scripts/bootstrap.sh                                     # deploy programs + fund a demo sale (Logos testnet)
@@ -100,18 +129,22 @@ lpad bc buy-private --sale <id> --in 1000     # private buy: deshield -> public 
 
 ## CLI - what works
 
-All commands below are implemented and live-tested against a dev **and** a real-proof
-sequencer.
+All 44 commands below are implemented, and all 44 have been run against a live
+sequencer. There is no dev-mode sequencer to test against - a real one verifies
+proofs, so `RISC0_DEV_MODE` applies only to the in-process integration tests.
+`scripts/test-all-cli.sh` is the sweep; `scripts/private-ops.sh` runs the shielded
+subset on its own, because each of those needs a real recursive STARK.
 
 | Area | Commands | What it does |
 |---|---|---|
-| Wallet / discovery | `status`, `my-balance`, `my-sales`, `my-pools` | chain+wallet snapshot; balances incl. native LEZ + WLEZ + shielded; auto-discover your sales/pools |
-| Offline calc (no wallet) | `bc quote\|cost\|sell-quote\|ids`, `lbp weight\|quote\|ids`, `program-id` | quotes / PDA derivation straight from the on-chain libraries |
+| Wallet / discovery | `status`, `balance`, `my-balance`, `my-sales`, `my-pools` | chain+wallet snapshot; one account's balance or all of yours (native LEZ + WLEZ + shielded); auto-discover your sales/pools |
+| Offline calc (no wallet) | `bc quote\|cost\|sell-quote\|ids`, `lbp weight\|quote\|ids\|allowlist-leaf`, `program-id` | quotes / PDA derivation / allowlist leaves straight from the on-chain libraries |
 | Collateral & shielding | `wrap` / `unwrap` (native LEZ ↔ WLEZ), `shield` / `deshield`, `shield-lez` / `deshield-lez` | wrap native LEZ into the WLEZ token; move tokens public ↔ shielded (one-shot LEZ↔shielded-WLEZ) |
 | One-shot launch | `bc create-token-sale [--private]` | mint a token (on-chain name/symbol) **and** open a native-LEZ-collateral sale in one go; `--private` = unlinkable creator via a shielded deposit |
 | Bonding curve | `bc create-sale`, `bc buy`, `bc buy-ata`, `bc buy-private`, `bc sell`, `bc sell-ata`, `bc sell-private`, `bc close`, `bc withdraw`, `bc sale-info` | full BC lifecycle - public / private / **ATA** paths |
-| LBP | `lbp create-sale`, `lbp buy`, `lbp buy-ata`, `lbp buy-private`, `lbp pause\|resume\|poke`, `lbp close`, `lbp withdraw`, `lbp pool-info` | full LBP lifecycle - public / private / **ATA** paths |
+| LBP | `lbp create-sale`, `lbp buy`, `lbp buy-gated`, `lbp buy-ata`, `lbp buy-private`, `lbp pause\|resume\|poke`, `lbp close`, `lbp withdraw`, `lbp pool-info` | full LBP lifecycle - public / private / **ATA** / allowlist-gated paths |
 | ATAs (RFP Func) | `create-ata`, `bc buy-ata` / `sell-ata`, `lbp buy-ata` | route token interactions through Associated Token Accounts (RFP-015 #7 / RFP-016 #9, per LP-0014) |
+| Holdings | `init-holding` | create **and initialise** a token holding. Needed before anyone can send to it: the token program claims the recipient as `Authorized`, which the runtime grants only to a signer, and the LEZ wallet has no equivalent command |
 
 > Not yet wired into the CLI: the Logos mini-app (GUI) - see the WIP note above.
 
@@ -178,9 +211,11 @@ dependency needs no in-proof clock (which would drift).
 
 ```
 programs/   bonding_curve/{core,}, lbp/{core,}, wlez/{core,}  (core math, host logic, guest main.rs)
-            artifacts/lpad/*.bin  (committed reproducible guest ELFs = the program ids)
-            token/ ata/ wlez/   vendored LEZ programs (ata also powers the ATA buy/sell path; same image ids → ldex interop)
-            integration_tests/  E2E vs in-process V03State
+            artifacts/lpad/*.bin   committed reproducible guest ELFs = the program ids
+            artifacts/*-abi.json   generated from source by scripts/build-abi.sh
+            integration_tests/     E2E vs in-process LEZ state
+            (the token and ATA programs are no longer vendored - LEZ v0.2.1 ships
+             both upstream as committed artifacts with machine-independent ids)
 sdk/        lpad-sdk: full lifecycle (discover/quote/buy/sell/create/withdraw - public + private + ATA)
 cli/        lpad CLI over the SDK (offline quotes/PDAs + online ops); see cli/README.md for the full command reference
 ```
