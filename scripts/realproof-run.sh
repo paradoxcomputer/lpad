@@ -20,7 +20,19 @@ for _ in $(seq 1 160); do            # up to ~40 min (bootstrap incl. 2 shield S
   sleep 15
 done
 if ! { [ -f "$ENVF" ] && grep -q LPAD_LBP_POOL_ID "$ENVF"; }; then
-  say "BOOTSTRAP DID NOT COMPLETE - last lines:"; tail -25 /tmp/lpad-v020-real-bootstrap.log | tee -a "$LOG"; exit 1
+  # Was `tail /tmp/lpad-v020-real-bootstrap.log` - a v0.2.0-era filename that
+  # nothing in this repo has ever written, so the one diagnostic this failure
+  # path exists to print was always empty. Point at the caller's log if they
+  # gave us one, and otherwise say plainly that there is nothing to show.
+  say "BOOTSTRAP DID NOT COMPLETE (no $ENVF, or it has no LPAD_LBP_POOL_ID)"
+  if [ -n "${LPAD_BOOTSTRAP_LOG:-}" ] && [ -f "$LPAD_BOOTSTRAP_LOG" ]; then
+    say "last lines of $LPAD_BOOTSTRAP_LOG:"; tail -25 "$LPAD_BOOTSTRAP_LOG" | tee -a "$LOG"
+  else
+    say "no bootstrap log captured - re-run as:"
+    say "  bash scripts/bootstrap.sh 2>&1 | tee /tmp/lpad-bootstrap.log"
+    say "  LPAD_BOOTSTRAP_LOG=/tmp/lpad-bootstrap.log bash scripts/realproof-run.sh"
+  fi
+  exit 1
 fi
 # shellcheck disable=SC1090
 source "$ENVF"

@@ -33,6 +33,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 # caller-supplied knob FIRST, source the file, then re-assert the knobs.
 # ---------------------------------------------------------------------------
 NETWORK="${LPAD_NETWORK:-testnet}"
+# `logos` is an alias for `testnet`; canonicalise it so the per-network env-file
+# default below cannot name a bootstrap.logos.env that nothing writes.
+[ "$NETWORK" = "logos" ] && NETWORK=testnet
 SKIP_PRIVATE="${LPAD_SKIP_PRIVATE:-0}"
 WALLET_HOME_OVERRIDE="${LPAD_WALLET_HOME:-}"
 ENVFILE_OVERRIDE="${LPAD_TEST_ENV:-}"

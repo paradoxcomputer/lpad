@@ -26,9 +26,13 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 NETWORK="${LPAD_NETWORK:-testnet}"
+# `logos` is an alias for `testnet`. Canonicalise it before it reaches the
+# ENVFILE default below, which would otherwise look for a bootstrap.logos.env
+# that bootstrap.sh never writes.
+[ "$NETWORK" = "logos" ] && NETWORK=testnet
 case "$NETWORK" in
-  testnet|logos) NET_HOME="$HOME/.lpad";         NET_ADDR="https://testnet.lez.logos.co" ;;
-  paradox)       NET_HOME="$HOME/.lpad-paradox"; NET_ADDR="https://seq-testnet.paradox.computer" ;;
+  testnet) NET_HOME="$HOME/.lpad";         NET_ADDR="https://testnet.lez.logos.co" ;;
+  paradox) NET_HOME="$HOME/.lpad-paradox"; NET_ADDR="https://seq-testnet.paradox.computer" ;;
   *) echo "unknown LPAD_NETWORK '$NETWORK'" >&2; exit 2 ;;
 esac
 ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.$NETWORK.env}"

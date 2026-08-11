@@ -234,11 +234,30 @@ pub fn program_id(which: &str, json: bool) -> Result<(), String> {
         _ => return Err("program must be 'bc', 'lbp', 'ata', or 'wlez'".into()),
     };
     let s = crate::fmt::hex_program(id);
+    // wlez additionally reports the two PDAs it owns. They are pure derivations
+    // from the program id (no wallet, no chain), and they are the only handle a
+    // deployment check has on wlez: unlike a sale or a pool, nothing records a
+    // wlez account id during bootstrap.
+    let wlez_pdas = (which == "wlez").then(|| {
+        (
+            crate::fmt::hex_account(lpad_sdk::wlez_definition_id(id)),
+            crate::fmt::hex_account(lpad_sdk::wlez_vault_id(id)),
+        )
+    });
     if json {
-        println!("{}", serde_json::json!({ "program": which, "program_id": s }));
+        let mut o = serde_json::json!({ "program": which, "program_id": s });
+        if let Some((def, vault)) = &wlez_pdas {
+            o["definition"] = serde_json::json!(def);
+            o["vault"] = serde_json::json!(vault);
+        }
+        println!("{o}");
     } else {
         ui::header(&format!("{which} program id"));
         ui::kv("program id", s);
+        if let Some((def, vault)) = &wlez_pdas {
+            ui::kv("definition", def.clone());
+            ui::kv("vault", vault.clone());
+        }
     }
     Ok(())
 }

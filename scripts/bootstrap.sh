@@ -2,8 +2,9 @@
 # Bootstrap an LPAD end-to-end run against a REAL LEZ sequencer.
 #
 # There is no bundled local sequencer any more: lpad targets the Logos testnet or
-# the Paradox Computer testnet. Both currently run LEZ v0.2.0, which is what the
-# crates are pinned to.
+# the Paradox Computer testnet. Both run a LEZ build whose built-in program image
+# ids match v0.2.4, which is what the crates are pinned to - see the `chain_parity`
+# tests in sdk/src/lib.rs, which assert that equality.
 #
 # What it does: configures a wallet against the chosen network, self-funds a
 # creator from the pinata faucet (or an explicit funder key), mints a project +
@@ -54,7 +55,20 @@ D=1000000; R=200000; VT=2000000; VC=50000; FEE_BPS=100; NONCE=0
 PROJ_SUPPLY=10000000; COLL_SUPPLY=10000000
 BUYER_FUND=100000; PRIV_FUND=50000; INIT_DUST=1
 
-[ -x "$WALLET" ] || { echo "wallet CLI not built: $WALLET" >&2; exit 1; }
+# bootstrap is the ONE part of lpad that needs a LEZ checkout. Everything else
+# builds off the published git tag; this script drives the upstream `wallet`
+# binary (key management, deploys, transfers) and seeds its config from the
+# checkout, so both must exist. Say so concretely - "wallet CLI not built" alone
+# sent people looking for an lpad target that was never going to appear.
+if [ ! -x "$WALLET" ]; then
+  echo "✗ LEZ wallet binary not found: $WALLET" >&2
+  echo "  scripts/bootstrap.sh drives the upstream wallet; building lpad does not produce it." >&2
+  echo "  Clone LEZ at the tag lpad pins and build it:" >&2
+  echo "    git clone --branch v0.2.4 https://github.com/logos-blockchain/logos-execution-zone.git ~/lez" >&2
+  echo "    (cd ~/lez && cargo build --release -p wallet)" >&2
+  echo "  Then re-run, or set LPAD_LEZ_DIR / LPAD_WALLET_BIN." >&2
+  exit 1
+fi
 [ -x "$LPAD" ]   || { echo "lpad CLI not built: $LPAD (run: cd cli && cargo build --release)" >&2; exit 1; }
 # checkHealth over JSON-RPC: works for https (no explicit port) and actually
 # proves the sequencer is serving, not just that a socket is open.
@@ -64,7 +78,16 @@ timeout 30 curl -sf -X POST "$SEQ_ADDR" -H 'content-type: application/json' \
 
 export LEE_WALLET_HOME_DIR="$HOME_DIR"
 mkdir -p "$HOME_DIR"
-cp -f "$LEZ/lez/wallet/configs/debug/wallet_config.json" "$HOME_DIR/wallet_config.json"
+# Separate from the binary check above: LPAD_WALLET_BIN can relocate the wallet
+# without there being a checkout at all, and this template only lives in one.
+WCFG="$LEZ/lez/wallet/configs/debug/wallet_config.json"
+[ -f "$WCFG" ] || {
+  echo "✗ LEZ wallet config template not found: $WCFG" >&2
+  echo "  bootstrap seeds its wallet config from the LEZ checkout, then rewrites the" >&2
+  echo "  sequencer list. Point LPAD_LEZ_DIR at a v0.2.4 checkout." >&2
+  exit 1
+}
+cp -f "$WCFG" "$HOME_DIR/wallet_config.json"
 python3 - "$HOME_DIR/wallet_config.json" "$SEQ_ADDR" <<'PY'
 import json,sys
 p,addr=sys.argv[1],sys.argv[2]
