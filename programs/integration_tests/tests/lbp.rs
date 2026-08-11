@@ -176,6 +176,86 @@ fn expected_tokens_out(collateral_in: u128) -> u128 {
     buy_tokens_out(RESERVE_TOKEN, RESERVE_COLLATERAL, wt, collateral_in)
 }
 
+/// `CreateSale` end-to-end: claims the pool PDA, deposits the project tokens
+/// into the token vault, and seeds the collateral vault.
+///
+/// Every other test in this file starts from `seed_open_pool`, which injects a
+/// ready-made [`PoolState`] with `force_insert_account`. That skipped the create
+/// path entirely - its two chained `token::Transfer` legs and its three
+/// signatures (project holding, collateral holding, creator identity) were never
+/// exercised, which is why a create that the unit tests accept could still be
+/// rejected on chain. Mirrors `bonding_curve::create_sale_deposits_and_initializes_state`.
+#[test]
+fn create_sale_deposits_and_seeds_both_vaults() {
+    let creator_token_key = PrivateKey::try_new([41; 32]).expect("key");
+    let creator_coll_key = PrivateKey::try_new([43; 32]).expect("key");
+    let creator_key = PrivateKey::try_new([42; 32]).expect("key");
+    let creator_token_id = id_of(&creator_token_key);
+    let creator_coll_id = id_of(&creator_coll_key);
+    let i = ids(id_of(&creator_key));
+
+    let mut state = testnet_initial_state::initial_state();
+    deploy(&mut state);
+    state.force_insert_account(creator_token_id, fungible(i.token_def, RESERVE_TOKEN));
+    state.force_insert_account(creator_coll_id, fungible(i.collateral_def, RESERVE_COLLATERAL));
+    state.force_insert_account(i.creator, fungible(i.collateral_def, 0));
+
+    let instruction = Instruction::CreateSale {
+        collateral_definition_id: i.collateral_def,
+        treasury_id: i.treasury,
+        token_name: String::new(),
+        token_symbol: String::new(),
+        token_deposit: RESERVE_TOKEN,
+        collateral_seed: RESERVE_COLLATERAL,
+        w_start_q64: w(99, 100),
+        w_end_q64: w(1, 100),
+        t_start_ms: T_START,
+        t_end_ms: T_END,
+        fee_bps: FEE_BPS,
+        block_token_ceiling: 0,
+        allowlist_root: [0; 32],
+        fixed_price: false,
+        min_duration_ms: 0,
+        nonce: NONCE,
+        ata_program_id: ata_prog(),
+        deadline: u64::MAX,
+    };
+    let message = public_transaction::Message::try_new(
+        lbp(),
+        vec![
+            i.pool,
+            i.token_vault,
+            i.collateral_vault,
+            creator_token_id,
+            creator_coll_id,
+            i.creator,
+            CLOCK_01,
+        ],
+        vec![Nonce(0), Nonce(0), Nonce(0)],
+        instruction,
+    )
+    .expect("message");
+    let witness = public_transaction::WitnessSet::for_message(
+        &message,
+        &[&creator_token_key, &creator_coll_key, &creator_key],
+    );
+    state
+        .transition_from_public_transaction(&PublicTransaction::new(message, witness), 0, 0)
+        .expect("lbp create_sale must succeed");
+
+    let pool = PoolState::try_from(&state.get_account_by_id(i.pool).data).expect("pool");
+    assert_eq!(state.get_account_by_id(i.pool).program_owner, lbp());
+    assert_eq!(pool.reserve_token, RESERVE_TOKEN);
+    assert_eq!(pool.reserve_collateral, RESERVE_COLLATERAL);
+    assert_eq!(pool.ata_program_id, ata_prog(), "ATA program pinned at creation");
+    assert!(matches!(pool.status, SaleStatus::Open));
+    // Both deposit legs must have moved, and the creator's holdings drained.
+    assert_eq!(bal(&state, i.token_vault), RESERVE_TOKEN, "token deposit landed");
+    assert_eq!(bal(&state, i.collateral_vault), RESERVE_COLLATERAL, "collateral seed landed");
+    assert_eq!(bal(&state, creator_token_id), 0);
+    assert_eq!(bal(&state, creator_coll_id), 0);
+}
+
 #[test]
 fn public_buy_moves_tokens_and_collateral() {
     let creator = id_of(&PrivateKey::try_new([42; 32]).unwrap());
