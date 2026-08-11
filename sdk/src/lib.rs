@@ -1734,6 +1734,7 @@ impl LaunchpadClient {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn lbp_buy_gated(
         &self,
         program: ProgramId,

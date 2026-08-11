@@ -46,9 +46,9 @@ pub enum Instruction {
     ///   2. `init_holding` - the holding `token::NewFungibleDefinition` requires
     ///      for the initial supply (0 for WLEZ; untouched afterwards)
     ///   3. `reference_token_def` - a reference token-program definition. Its
-    ///     `program_owner` must equal `token_program_id` (the caller-
-    ///     pinned canonical token program); this is the program the
-    ///     WLEZ definition will be created under. Pinning the expected
+    ///      `program_owner` must equal `token_program_id` (the caller-
+    ///      pinned canonical token program); this is the program the
+    ///      WLEZ definition will be created under. Pinning the expected
     ///      id prevents a malicious reference definition from redirecting
     ///      the WLEZ definition's owning program at bootstrap.
     ///   4. `payer` - signs the setup transaction.
