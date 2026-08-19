@@ -245,20 +245,22 @@ jobs:
           - pkg: lpad-linux-x64
             runs-on: ubuntu-22.04
             exercised: 'yes - npm/smoke-test.sh passes 26/26 locally on this layout'
-          # macos-14 is the Apple-silicon image. Never run for this project.
+          # macos-14 is the Apple-silicon image. First built successfully
+          # 2026-08-19; the artifact is a genuine Mach-O 64-bit arm64 executable.
           - pkg: lpad-darwin-arm64
             runs-on: macos-14
-            exercised: 'no - never built'
+            exercised: 'yes - built on macos-14, published as 0.3.1'
           # macos-13 is the last Intel image, and GitHub has been retiring Intel
           # macOS runners; if this entry stops scheduling, the replacement is the
           # newer Intel image (macos-15-intel) - and note that moving to it raises
           # the macOS floor unless MACOSX_DEPLOYMENT_TARGET keeps it pinned, which
           # is why that variable is set explicitly below instead of being left to
           # whatever the image defaults to.
-          # DROPPED - see the note above. Re-enable with a working Intel runner.
+          # DROPPED 2026-08-19: the macos-13 runner never became available (queued
+          # 30+ min, never assigned). Re-enable with a working Intel image:
           # - pkg: lpad-darwin-x64
-          #             runs-on: macos-13
-            exercised: 'no - never built'
+          #   runs-on: macos-13
+          #   exercised: 'no - never built'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
