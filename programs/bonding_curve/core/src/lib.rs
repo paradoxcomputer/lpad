@@ -60,9 +60,19 @@ pub struct ClockData {
     pub timestamp: i64,
 }
 
+/// Cap on the width of a `BuyDisposable` timestamp validity window (1 hour).
+///
+/// A disposable buy carries no clock account, so the window is its only notion
+/// of time - and a window is a free option: the buyer prices against a pinned
+/// pre-state, then holds the finished proof, submitting only if the curve moved
+/// their way and letting it expire otherwise. Capping the width bounds how long
+/// that option runs while still leaving room for a slow proof.
+pub const MAX_PRIVATE_WINDOW_MS: u64 = 3_600_000;
+
 /// Stable PDA-seed discriminators (must never change for address compatibility).
 const TOKEN_VAULT_TAG: &[u8; 16] = b"bc/token_vault\0\0";
 const COLLATERAL_VAULT_TAG: &[u8; 16] = b"bc/coll_vault\0\0\0";
+const CREATOR_INDEX_TAG: &[u8; 16] = b"bc/creator_idx\0\0";
 
 // ---------------------------------------------------------------------------
 // State
@@ -126,6 +136,62 @@ pub struct SaleState {
     pub sale_reserve: u128,
     /// Real collateral raised, net of fees already swept to treasury.
     pub real_collateral: u128,
+    /// Protocol fees escrowed *inside the collateral vault*, owed to the
+    /// treasury and settled by [`Instruction::SweepTreasury`]. Only
+    /// `BuyDisposable` credits this: it cannot pay the treasury directly,
+    /// because the treasury is a `CreateSale` argument that lpad's own bootstrap
+    /// shares across sales, and every public account in a privacy transaction is
+    /// pinned byte-for-byte at proving time - so pinning the treasury would let
+    /// any fee-bearing activity anywhere invalidate every in-flight private buy.
+    /// The public paths sweep their fee in the same transaction and leave this
+    /// at zero.
+    ///
+    /// INVARIANT: `collateral_vault_balance == real_collateral + treasury_owed`.
+    /// `Withdraw` pays the creator `balance - treasury_owed` and deliberately
+    /// leaves this bucket - and the collateral backing it - in the vault, which
+    /// is what keeps the invariant true across a withdrawal.
+    ///
+    /// RESIDUAL RISK - a treasury that cannot receive would make this bucket
+    /// **unsweepable forever**, and it is worth being blunt about what that
+    /// would mean: no instruction in this program can release it. `SweepTreasury`
+    /// is the only one that pays it out, `Withdraw` deliberately subtracts it
+    /// from the creator's payout, and nothing rewrites `treasury_id`. The
+    /// collateral behind it would simply stay in the vault for good. What is
+    /// bounded is the damage, not the loss: it is only ever the accrued
+    /// disposable-buy fee, and the raise itself still comes out (that is why
+    /// settlement is its own instruction).
+    ///
+    /// `CreateSale` takes the treasury as an ACCOUNT and requires it to ALREADY
+    /// be an initialised `TokenHolding::Fungible` of the sale's collateral
+    /// definition, under that definition's own token program. That is what makes
+    /// the paragraph above hypothetical instead of a live hazard. The shapes it
+    /// rules out, each of which was permanent:
+    ///   * **uninitialised** - settling has to CREATE the treasury, and
+    ///     `token::transfer` creates a recipient with
+    ///     `new_claimed_if_default(.., Claim::Authorized)`, a claim LEZ admits
+    ///     only when the account being claimed is itself authorized. So nothing
+    ///     but the treasury's OWN signature could settle such a sale - and that
+    ///     same key is the only thing that can destroy the id, because a claim
+    ///     also needs the pre-state to be `Account::default()` WHOLE while LEZ
+    ///     bumps a signer's nonce even when its account is unowned. Let it sign
+    ///     anything else first and no program can ever claim the account: it can
+    ///     never receive a token. A STRANGER cannot do any of this - LEZ refuses
+    ///     any transaction that leaves a DEFAULT-owned account modified but
+    ///     unclaimed (`DefaultAccountModifiedWithoutClaim`), balance included, so
+    ///     a publicly readable `treasury_id` cannot be dusted from outside. The
+    ///     hazard was self-inflicted; it was permanent all the same.
+    ///   * **wrong definition, or a holding under a different token program** -
+    ///     the fee leg moves the collateral vault's token and is dispatched on
+    ///     that vault's own program, so either shape reverts on every sweep, and
+    ///     no signature changes that. Deployment on LEZ is permissionless, so the
+    ///     second one is a shape anyone can mint.
+    ///
+    /// The pin holds for the life of the sale because the state cannot regress:
+    /// an initialised holding is owned by the token program, and LEZ's token
+    /// program has no instruction that un-initialises one (`burn` only lowers a
+    /// balance). `SweepTreasury` keeps its uninitialised-treasury branch anyway,
+    /// as unreachable defence-in-depth - see the note there.
+    pub treasury_owed: u128,
     pub status: SaleStatus,
     // ---- gapless analytics (RFP-015 Usability #8) ----
     pub cum_collateral_in: u128,
@@ -186,6 +252,93 @@ impl SaleState {
 }
 
 // ---------------------------------------------------------------------------
+// Per-creator sale index
+// ---------------------------------------------------------------------------
+
+/// First eight bytes of every [`CreatorIndex`] account. `SaleState` carries no
+/// discriminant because nothing else is ever stored at a sale PDA, but this
+/// account is *read speculatively* - the SDK derives the index PDA for a wallet
+/// and reads whatever is there - so it has to be able to say "this is not one of
+/// mine" rather than decode some other account's bytes into a plausible-looking
+/// list of sale ids.
+pub const CREATOR_INDEX_MAGIC: [u8; 8] = *b"lpad/bci";
+
+/// Layout version of [`CreatorIndex`]. Bumped only for a breaking field change;
+/// [`CreatorIndex::try_from`] refuses anything it does not recognise, so an old
+/// reader fails loudly instead of mis-parsing a newer index.
+pub const CREATOR_INDEX_VERSION: u16 = 1;
+
+/// Maximum number of sale ids one creator's index may hold.
+///
+/// `Data` caps an account at `DATA_MAX_LENGTH` (100 KiB). A full index encodes
+/// to `8 + 2 + 32 + 4 + 32*n` bytes, so 3,000 ids is 96,046 - comfortably under
+/// the cap with room for a future field. The bound is asserted in
+/// [`CreatorIndex::push`] rather than left to the encode, because the encode's
+/// failure is a `DataTooBigError` panic from inside `From<&CreatorIndex> for
+/// Data` that says nothing about which account or what to do next.
+pub const MAX_INDEXED_SALES: usize = 3_000;
+
+/// Per-creator index of the sales that creator has created: ONE account per
+/// (program, creator), appended to by `CreateSale`.
+///
+/// This exists so discovery is a single read per creator. Without it the SDK has
+/// to re-derive every sale PDA the wallet could possibly have made - a product
+/// over (creator account, token definition, collateral definition, nonce), each
+/// arm of which is a network round-trip - which measured at ~4,800 reads and
+/// tens of minutes on a wallet with history.
+///
+/// IDS ONLY, deliberately. Sale state (reserves, status, counters) changes on
+/// every trade, so an index of state would be stale the moment it was written;
+/// an id is permanent. Readers resolve the ids against the sale accounts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct CreatorIndex {
+    /// [`CREATOR_INDEX_MAGIC`]. Checked on decode.
+    pub magic: [u8; 8],
+    /// [`CREATOR_INDEX_VERSION`]. Checked on decode.
+    pub version: u16,
+    /// The creator this index belongs to. Redundant with the PDA derivation and
+    /// kept anyway: it makes a decoded index self-describing, and it is what
+    /// `create_sale` re-checks before appending, so two creators' lists can never
+    /// be merged by a derivation change or a seed collision.
+    pub creator: AccountId,
+    /// Sale PDAs this creator has created, oldest first. Never removed - see the
+    /// note on `CloseSale` in `lifecycle.rs`: a closed sale is still one the
+    /// creator created and still worth listing.
+    pub sale_ids: Vec<AccountId>,
+}
+
+impl CreatorIndex {
+    /// A fresh, empty index for `creator`.
+    ///
+    /// Deliberately not `Default`: a defaulted `CreatorIndex` would carry a zero
+    /// magic and so could never be decoded back, which is a trap worth not
+    /// leaving lying around.
+    #[must_use]
+    pub fn new(creator: AccountId) -> Self {
+        Self {
+            magic: CREATOR_INDEX_MAGIC,
+            version: CREATOR_INDEX_VERSION,
+            creator,
+            sale_ids: Vec::new(),
+        }
+    }
+
+    /// Append a newly created sale id, enforcing [`MAX_INDEXED_SALES`].
+    ///
+    /// No dedup check: the caller only ever appends a sale PDA it has just
+    /// asserted was uninitialized, and a sale PDA is unique per
+    /// `(token_def, collateral_def, creator, nonce)`, so the same id cannot be
+    /// created twice.
+    pub fn push(&mut self, sale_id: AccountId) {
+        assert!(
+            self.sale_ids.len() < MAX_INDEXED_SALES,
+            "creator sale index is full - create further sales from a different creator account"
+        );
+        self.sale_ids.push(sale_id);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Instruction set
 // ---------------------------------------------------------------------------
 
@@ -199,6 +352,24 @@ impl SaleState {
 pub enum Instruction {
     /// Create a new sale. Transfers `D + R` project tokens from the creator into
     /// the token vault. No real collateral is deposited.
+    ///
+    /// Account order: `[sale, token_vault, collateral_vault, treasury,
+    /// token_definition, collateral_definition, creator_token_holding, creator,
+    /// creator_index, clock]`.
+    ///
+    /// `creator_index` is the creator's [`CreatorIndex`] PDA - claimed here on
+    /// the creator's first sale, appended to on every later one, and pinned to
+    /// `compute_creator_index_pda(self_program_id, creator)` so no one can append
+    /// into another creator's list. It is what makes sale discovery one read per
+    /// creator; sales created before this account existed appear in no index, so
+    /// a reader still needs the brute-force derivation as a fallback.
+    ///
+    /// The `treasury` slot is read-only and is here to be type-checked: it must
+    /// already be an initialised Fungible holding of `collateral_definition_id`
+    /// under that definition's own token program, which is what keeps the fee
+    /// escrow sweepable for the life of the sale (see
+    /// [`SaleState::treasury_owed`]). `treasury_id` below is the id pinned into
+    /// the sale and must equal that account's id.
     CreateSale {
         collateral_definition_id: AccountId,
         treasury_id: AccountId,
@@ -252,7 +423,95 @@ pub enum Instruction {
     /// Manual close (creator) once the end timestamp has passed.
     CloseSale { deadline: u64 },
     /// Creator withdrawal of raised collateral + unused DEX seed reserve.
+    ///
+    /// Pays out `collateral_vault_balance - treasury_owed`: the escrowed
+    /// protocol fee stays in the vault for [`Instruction::SweepTreasury`], a
+    /// separate instruction so that an unusable treasury can never block the
+    /// creator's payout (see [`SaleState::treasury_owed`]).
+    ///
+    /// Account order: `[sale, token_vault, collateral_vault,
+    /// creator_collateral_holding, creator_token_holding, creator]`.
     Withdraw { deadline: u64 },
+    /// Buy in which the buyer's collateral holding and token holding are
+    /// **private** account slots, so the debit and the credit are private notes
+    /// inside one atomic proof. "Disposable" names the single-use note, not an
+    /// account: LEZ privacy is a per-slot label on an otherwise ordinary buy, so
+    /// there is no ephemeral account, no deshield leg and no re-shield leg.
+    ///
+    /// Account order: `[sale, token_vault, collateral_vault,
+    /// buyer_collateral_holding, buyer_token_holding]` - note the two accounts
+    /// the public `Buy` has and this does not:
+    ///   * **no clock**, because every public account in a privacy transaction is
+    ///     pinned byte-for-byte at proving time and re-verified against live
+    ///     state at inclusion, while the clock's data is rewritten every block.
+    ///     The sale's `end_timestamp_ms` guard is enforced instead by the
+    ///     timestamp validity window the guest emits, whose exclusive upper bound
+    ///     is [`private_window_hi`] and whose inclusive lower bound is
+    ///     `not_before_ms`.
+    ///   * **no treasury**, for the same pinning reason (see
+    ///     [`SaleState::treasury_owed`]): the fee is escrowed in the collateral
+    ///     vault and handed over later by [`Instruction::SweepTreasury`] rather
+    ///     than swept here.
+    ///
+    /// `not_before_ms` is the window's lower bound - the earliest wall-clock time
+    /// the buy may be included at.
+    BuyDisposable {
+        collateral_in: u128,
+        min_tokens_out: u128,
+        not_before_ms: u64,
+        deadline: u64,
+    },
+    /// Pay the fees escrowed by [`Instruction::BuyDisposable`] out of the
+    /// collateral vault to the sale's pinned treasury, clearing
+    /// [`SaleState::treasury_owed`] by exactly the amount that moved.
+    ///
+    /// Account order: `[sale, collateral_vault, treasury]`.
+    ///
+    /// **Permissionless, and that is the intent.** No signature is required: the
+    /// only effect available to a submitter is moving the owed fee from the vault
+    /// to the `treasury_id` pinned in the sale at creation, so a stranger who
+    /// sends this hands the fee to its rightful owner and pays the gas for the
+    /// privilege. A creator/admin signature would buy nothing and would add a
+    /// party able to withhold settlement.
+    ///
+    /// The treasury's *own* signature is accepted though - it would be the only
+    /// way to settle into a treasury account that was never initialised, since the
+    /// fee leg has to create it and LEZ lets only the claimed account's own
+    /// authorization do that. `CreateSale` no longer admits such a sale (see
+    /// [`SaleState::treasury_owed`]), so that path is unreachable and kept only as
+    /// defence-in-depth; the account list is the same either way and the slot is
+    /// simply forwarded as it arrives, never forced.
+    ///
+    /// Valid whether the sale is Open or Closed: the escrow accrues while the
+    /// sale runs, and the treasury should not have to wait on the creator to
+    /// close. Deliberately NOT a leg of `Withdraw` - a treasury that cannot
+    /// receive (uninitialised, wrong definition, wrong token program) would
+    /// otherwise revert the creator's payout with it and lock the entire raise.
+    SweepTreasury { deadline: u64 },
+}
+
+// ---------------------------------------------------------------------------
+// Disposable (private) buy validity window
+// ---------------------------------------------------------------------------
+
+/// Exclusive upper bound of the timestamp validity window a `BuyDisposable`
+/// output carries, given the submitter's `deadline`, the window's lower bound
+/// `not_before_ms`, and the sale's end (`end_or_max` is `end_timestamp_ms`, or
+/// `u64::MAX` for a sale with no configured end).
+///
+/// All three are upper bounds and the tightest wins: the submitter's own
+/// deadline, the free-option cap [`MAX_PRIVATE_WINDOW_MS`] past the lower bound,
+/// and the sale's end - the last is the *only* way a private buy honours
+/// `end_timestamp_ms`, since it carries no clock to compare against.
+///
+/// Kept pure (and free of the emptiness check) so it is unit-testable: the guest
+/// separately asserts `not_before_ms < hi`, which is what the LEZ
+/// `ValidityWindow` would otherwise reject as an empty window.
+#[must_use]
+pub fn private_window_hi(deadline: u64, not_before_ms: u64, end_or_max: u64) -> u64 {
+    deadline
+        .min(not_before_ms.saturating_add(MAX_PRIVATE_WINDOW_MS))
+        .min(end_or_max)
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +731,22 @@ pub fn compute_collateral_vault_pda_seed(sale_id: AccountId) -> PdaSeed {
     PdaSeed::new(hash32(&bytes))
 }
 
+/// Per-creator sale index PDA (see [`CreatorIndex`]). Keyed on the creator
+/// ALONE - that is what makes discovery one read per creator - so it is stable
+/// for the life of the account and shared by every sale that creator opens.
+#[must_use]
+pub fn compute_creator_index_pda(program_id: ProgramId, creator: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_creator_index_pda_seed(creator))
+}
+
+#[must_use]
+pub fn compute_creator_index_pda_seed(creator: AccountId) -> PdaSeed {
+    let mut bytes = [0u8; 48];
+    bytes[0..32].copy_from_slice(&creator.to_bytes());
+    bytes[32..48].copy_from_slice(CREATOR_INDEX_TAG);
+    PdaSeed::new(hash32(&bytes))
+}
+
 // ---------------------------------------------------------------------------
 // Serialization (Data <-> SaleState)
 // ---------------------------------------------------------------------------
@@ -489,6 +764,33 @@ impl From<&SaleState> for Data {
         let mut data = Vec::with_capacity(std::mem::size_of_val(state));
         BorshSerialize::serialize(state, &mut data).expect("Serialization to Vec should not fail");
         Data::try_from(data).expect("Sale state encoded data should fit into Data")
+    }
+}
+
+impl TryFrom<&Data> for CreatorIndex {
+    type Error = std::io::Error;
+
+    /// Decodes and AUTHENTICATES: an account that merely happens to Borsh-decode
+    /// is rejected unless it carries the magic and a version this build knows.
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        let index = CreatorIndex::try_from_slice(data.as_ref())?;
+        if index.magic != CREATOR_INDEX_MAGIC || index.version != CREATOR_INDEX_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not a bonding-curve creator index",
+            ));
+        }
+        Ok(index)
+    }
+}
+
+impl From<&CreatorIndex> for Data {
+    fn from(index: &CreatorIndex) -> Self {
+        let mut data = Vec::new();
+        BorshSerialize::serialize(index, &mut data).expect("Serialization to Vec should not fail");
+        // Unreachable: `CreatorIndex::push` bounds the list at MAX_INDEXED_SALES,
+        // whose encoded size is well under Data's cap.
+        Data::try_from(data).expect("Creator index encoded data should fit into Data")
     }
 }
 
@@ -644,6 +946,121 @@ mod tests {
         let back = SaleState::try_from(&data).unwrap();
         assert_eq!(s, back);
         assert!(back.invariant_holds());
+    }
+
+    // ---- per-creator sale index ------------------------------------------
+
+    const CREATOR_A: AccountId = AccountId::new([1u8; 32]);
+    const CREATOR_B: AccountId = AccountId::new([2u8; 32]);
+    const PROGRAM_A: ProgramId = [7u32; 8];
+    const PROGRAM_B: ProgramId = [8u32; 8];
+
+    fn index_with(n: usize) -> CreatorIndex {
+        let mut index = CreatorIndex::new(CREATOR_A);
+        for i in 0..n {
+            index.push(AccountId::new([u8::try_from(i % 251).unwrap(); 32]));
+        }
+        index
+    }
+
+    #[test]
+    fn creator_index_roundtrips_and_keeps_order() {
+        let mut index = CreatorIndex::new(CREATOR_A);
+        let first = AccountId::new([21u8; 32]);
+        let second = AccountId::new([22u8; 32]);
+        index.push(first);
+        index.push(second);
+
+        let data: Data = (&index).into();
+        let back = CreatorIndex::try_from(&data).unwrap();
+        assert_eq!(back, index);
+        assert_eq!(back.creator, CREATOR_A);
+        assert_eq!(
+            back.sale_ids,
+            vec![first, second],
+            "ids must stay in creation order - the SDK lists them as history"
+        );
+    }
+
+    /// The discriminant is the whole reason the SDK can read a speculative PDA
+    /// safely. Corrupting only the magic must make the account undecodable: with
+    /// the check removed this decodes fine and yields a plausible sale list.
+    #[test]
+    fn creator_index_rejects_a_foreign_account_that_happens_to_decode() {
+        let index = index_with(2);
+        let mut bytes: Vec<u8> = Data::from(&index).to_vec();
+        bytes[0] ^= 0xff;
+        let data = Data::try_from(bytes).unwrap();
+        assert!(
+            CreatorIndex::try_from(&data).is_err(),
+            "an account without the index magic must not decode as an index"
+        );
+    }
+
+    /// Same for the version: a future layout must fail loudly here rather than
+    /// be reinterpreted through this build's field order.
+    #[test]
+    fn creator_index_rejects_an_unknown_version() {
+        let index = index_with(2);
+        let mut bytes: Vec<u8> = Data::from(&index).to_vec();
+        // magic is bytes 0..8, version the little-endian u16 at 8..10.
+        bytes[8] = bytes[8].wrapping_add(1);
+        let data = Data::try_from(bytes).unwrap();
+        assert!(CreatorIndex::try_from(&data).is_err());
+    }
+
+    /// Trailing bytes are rejected too (Borsh is exact), so an index cannot be
+    /// smuggled inside a longer account.
+    #[test]
+    fn creator_index_rejects_trailing_bytes() {
+        let mut bytes: Vec<u8> = Data::from(&index_with(1)).to_vec();
+        bytes.push(0);
+        let data = Data::try_from(bytes).unwrap();
+        assert!(CreatorIndex::try_from(&data).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "creator sale index is full")]
+    fn creator_index_push_rejects_going_over_the_cap() {
+        let mut index = index_with(MAX_INDEXED_SALES);
+        index.push(AccountId::new([99u8; 32]));
+    }
+
+    /// The cap is only worth anything if a FULL index still encodes: the whole
+    /// point of asserting it in `push` is that the alternative failure is a
+    /// `DataTooBigError` panic on every later `CreateSale`, from inside the
+    /// encode, naming nothing. This pins the arithmetic behind the number.
+    #[test]
+    fn a_full_creator_index_still_fits_in_an_account() {
+        let index = index_with(MAX_INDEXED_SALES);
+        let data: Data = (&index).into();
+        assert_eq!(data.as_ref().len(), 8 + 2 + 32 + 4 + 32 * MAX_INDEXED_SALES);
+        assert!(
+            data.as_ref().len() <= 100 * 1024,
+            "a full index must stay under Data's DATA_MAX_LENGTH"
+        );
+        assert_eq!(CreatorIndex::try_from(&data).unwrap().sale_ids.len(), MAX_INDEXED_SALES);
+    }
+
+    /// One index per (program, creator): different creators must never share a
+    /// list, and the two launchpad programs must never share one either.
+    #[test]
+    fn creator_index_pda_is_unique_per_program_and_creator() {
+        let a = compute_creator_index_pda(PROGRAM_A, CREATOR_A);
+        assert_ne!(a, compute_creator_index_pda(PROGRAM_A, CREATOR_B));
+        assert_ne!(a, compute_creator_index_pda(PROGRAM_B, CREATOR_A));
+        assert_eq!(a, compute_creator_index_pda(PROGRAM_A, CREATOR_A), "derivation is stable");
+    }
+
+    /// The index seed shares its shape (32-byte id + 16-byte tag) with the two
+    /// vault seeds, so the tag is the only thing keeping an index off a vault's
+    /// address. Checked against a creator id used as a sale id, which is the
+    /// collision this rules out.
+    #[test]
+    fn creator_index_seed_does_not_collide_with_the_vault_seeds() {
+        let seed = compute_creator_index_pda_seed(CREATOR_A);
+        assert_ne!(seed, compute_token_vault_pda_seed(CREATOR_A));
+        assert_ne!(seed, compute_collateral_vault_pda_seed(CREATOR_A));
     }
 
     #[test]

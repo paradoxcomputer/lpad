@@ -32,7 +32,7 @@ fn assert_clock(clock: &AccountWithMetadata) {
     assert_eq!(
         clock.account_id,
         lbp_core::CLOCK_01,
-        "clock account must be the canonical CLOCK_01"
+        "clock must be CLOCK_01"
     );
 }
 

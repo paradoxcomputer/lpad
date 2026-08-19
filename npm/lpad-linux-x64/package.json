@@ -1,0 +1,38 @@
+{
+  "name": "@paradoxcomputer/lpad-linux-x64",
+  "version": "0.2.0",
+  "description": "lpad CLI binary for Linux x86_64 (glibc >= 2.34)",
+  "homepage": "https://github.com/paradoxcomputer/lpad#readme",
+  "bugs": {
+    "url": "https://github.com/paradoxcomputer/lpad/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paradoxcomputer/lpad.git",
+    "directory": "npm/lpad-linux-x64"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Paradox Computer",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "bin/lpad",
+    "lib/libpcsclite.so.1",
+    "lib/LICENSE-libpcsclite.txt",
+    "README.md",
+    "LICENSE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

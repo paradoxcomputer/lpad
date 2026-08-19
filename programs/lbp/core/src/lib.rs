@@ -4,8 +4,14 @@
 //! Pricing is a Balancer-style weight-shifting AMM: token weight declines
 //! linearly over the sale window, so the price falls over time unless buying
 //! pressure counteracts it. The out-given-in formula uses the integer Q64.64
-//! power in [`fixed`]. Unlike the bonding curve, the protocol fee is collected
-//! **at close** (the sale is time-bounded, so it is always collectible).
+//! power in [`fixed`]. Unlike the bonding curve, the protocol fee is charged
+//! **at close** rather than per swap (the sale is time-bounded, so it is always
+//! chargeable) - and charging it means escrowing it in the collateral vault as
+//! [`PoolState::treasury_owed`], which [`Instruction::SweepTreasury`] later hands
+//! to the treasury. `CreateSale` pins that treasury to an already-initialised
+//! holding of the collateral, and `Withdraw` deliberately pays no treasury
+//! account, so a treasury that cannot receive is both unconstructible and unable
+//! to hold the creator's payout hostage even if it were.
 
 pub mod fixed;
 
@@ -53,11 +59,49 @@ pub const MAX_ALLOWLIST_PROOF_DEPTH: usize = 32;
 /// [`fixed::div_to_q64`]). `create_sale` rejects a longer span at creation.
 pub const MAX_DURATION_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1_000;
 
+/// Widest timestamp validity window a `BuyDisposable` output may carry (1 hour).
+///
+/// A private buy is priced at the caller-supplied `t_buy_ms`, so the window is
+/// the only thing binding that argument to real time: the sequencer admits the
+/// transaction iff `t_buy_ms <= now < hi` (`LeeError::OutOfValidityWindow`), and
+/// the guest has no clock to check it against. Capping the span bounds how stale
+/// the quoted price may be when the proof finally lands. It is deliberately far
+/// wider than a public buy needs - a real private-buy STARK takes minutes to
+/// produce - and still short enough that the quote is recognisably current.
+pub const MAX_PRIVATE_WINDOW_MS: u64 = 3_600_000;
+
 /// Canonical on-chain Clock account (sequencer-updated each block).
 pub const CLOCK_01: AccountId = AccountId::new(*b"/LEZ/ClockProgramAccount/0000001");
 
 const TOKEN_VAULT_TAG: &[u8; 16] = b"lbp/token_vault\0";
 const COLLATERAL_VAULT_TAG: &[u8; 16] = b"lbp/coll_vault\0\0";
+const WEIGHT_OBS_TAG: &[u8; 16] = b"lbp/weight_obs\0\0";
+const CREATOR_INDEX_TAG: &[u8; 16] = b"lbp/creator_idx\0";
+
+/// First eight bytes of every [`CreatorIndex`] account. `PoolState` carries no
+/// discriminant because nothing else is ever stored at a pool PDA, but this
+/// account is *read speculatively* - the SDK derives the index PDA for a wallet
+/// and reads whatever is there - so it has to be able to say "this is not one of
+/// mine" rather than decode some other account's bytes into a plausible-looking
+/// list of pool ids. Distinct from the bonding curve's `lpad/bci`.
+pub const CREATOR_INDEX_MAGIC: [u8; 8] = *b"lpad/lbi";
+
+/// Layout version of [`CreatorIndex`]. Bumped only for a breaking field change;
+/// [`CreatorIndex::try_from`] refuses anything it does not recognise, so an old
+/// reader fails loudly instead of mis-parsing a newer index.
+pub const CREATOR_INDEX_VERSION: u16 = 1;
+
+/// Maximum number of pool ids one creator's index may hold.
+///
+/// `Data` caps an account at `DATA_MAX_LENGTH` (100 KiB). A full index encodes
+/// to `8 + 2 + 32 + 4 + 32*n` bytes, so 3,000 ids is 96,046 - comfortably under
+/// the cap with room for a future field. The bound is asserted in
+/// [`CreatorIndex::push`] rather than left to the encode, because the encode's
+/// failure is a `DataTooBigError` panic from inside `From<&CreatorIndex> for
+/// Data` that says nothing about which account or what to do next.
+///
+/// Mirrors `bonding_curve_core::MAX_INDEXED_SALES`, ceiling included.
+pub const MAX_INDEXED_POOLS: usize = 3_000;
 
 /// Local mirror of the sequencer `ClockAccountData` (Borsh: u64 block id, i64 ms).
 #[derive(Clone, Copy, BorshDeserialize)]
@@ -92,6 +136,100 @@ pub struct PriceObservation {
     pub price_q64: u128,
 }
 
+/// The stored weight `Poke` advances, in its own per-pool PDA rather than in
+/// [`PoolState`].
+///
+/// It lives here and not in the pool account because `Poke` is permissionless
+/// and economically inert, while a `BuyDisposable` proof PINS the pool account
+/// byte-for-byte and the sequencer re-verifies it against live state at
+/// inclusion: a poke that wrote into the pool would invalidate every in-flight
+/// private buy for the price of one cheap transaction. Split out, a private buy
+/// never has to declare this account at all.
+///
+/// Claimed lazily on the first `Poke` - the account simply does not exist before
+/// then. A consumer that finds it absent (or stale) recomputes the weight from
+/// the schedule with [`PoolState::weight_token_q64`]; this is a convenience for
+/// off-chain readers and is never an input to pricing.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct WeightObs {
+    /// Token weight (Q64.64) at `ts_ms`.
+    pub w_token_q64: u128,
+    /// Clock timestamp (ms) the weight was advanced to.
+    pub ts_ms: u64,
+}
+
+/// Per-creator index of the pools that creator has created: ONE account per
+/// (program, creator), appended to by `CreateSale`.
+///
+/// This exists so discovery is a single read per creator. Without it the SDK has
+/// to re-derive every pool PDA the wallet could possibly have made - a product
+/// over (creator account, token definition, collateral definition, nonce), each
+/// arm of which is a network round-trip - which measured at ~4,800 reads and
+/// tens of minutes on a wallet with history. (LP-0012, the event indexer, does
+/// not exist on this network.)
+///
+/// IDS ONLY, deliberately. Pool state (reserves, status, the observation ring)
+/// changes on every buy, so an index of state would be stale the moment it was
+/// written; an id is permanent. Readers resolve the ids against the pool
+/// accounts.
+///
+/// Pools created before this account existed appear in no index, which is why
+/// the SDK keeps the brute-force derivation as a FALLBACK rather than deleting
+/// it.
+///
+/// Mirrors `bonding_curve_core::CreatorIndex` field for field, with `pool_ids`
+/// where that one has `sale_ids`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct CreatorIndex {
+    /// [`CREATOR_INDEX_MAGIC`]. Checked on decode.
+    pub magic: [u8; 8],
+    /// [`CREATOR_INDEX_VERSION`]. Checked on decode.
+    pub version: u16,
+    /// The creator this index belongs to. Redundant with the PDA derivation and
+    /// kept anyway: it makes a decoded index self-describing, and it is what
+    /// `create_sale` re-checks before appending, so two creators' lists can never
+    /// be merged by a derivation change or a seed collision.
+    pub creator: AccountId,
+    /// Pool PDAs this creator has created, oldest first. Never removed: a closed
+    /// pool is still one the creator created and still worth listing.
+    pub pool_ids: Vec<AccountId>,
+}
+
+impl CreatorIndex {
+    /// A fresh, empty index for `creator`.
+    ///
+    /// Deliberately not `Default`: a defaulted `CreatorIndex` would carry a zero
+    /// magic and so could never be decoded back, which is a trap worth not
+    /// leaving lying around.
+    #[must_use]
+    pub fn new(creator: AccountId) -> Self {
+        Self {
+            magic: CREATOR_INDEX_MAGIC,
+            version: CREATOR_INDEX_VERSION,
+            creator,
+            pool_ids: Vec::new(),
+        }
+    }
+
+    /// Append a newly created pool id, enforcing [`MAX_INDEXED_POOLS`].
+    ///
+    /// No dedup check: the caller only ever appends a pool PDA it has just
+    /// asserted was uninitialized, and a pool PDA is unique per
+    /// `(token_def, collateral_def, creator, nonce)`, so the same id cannot be
+    /// created twice.
+    ///
+    /// Unlike the ownership assert in `create_sale`'s else branch, "use a
+    /// different creator account" really is the remedy here, so the message says
+    /// so - in the same words as `bonding_curve_core::CreatorIndex::push`.
+    pub fn push(&mut self, pool_id: AccountId) {
+        assert!(
+            self.pool_ids.len() < MAX_INDEXED_POOLS,
+            "creator pool index is full - create further pools from a different creator account"
+        );
+        self.pool_ids.push(pool_id);
+    }
+}
+
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PoolState {
     // ---- identity / config ----
@@ -116,9 +254,56 @@ pub struct PoolState {
     // ---- reserves ----
     pub reserve_token: u128,
     pub reserve_collateral: u128,
-    // ---- poke convenience (off-chain consumers) ----
-    pub stored_w_token_q64: u128,
-    pub stored_w_ts_ms: u64,
+    /// At-close protocol fee escrowed *inside the collateral vault*, owed to the
+    /// treasury and settled by [`Instruction::SweepTreasury`]. `Withdraw` credits
+    /// this bucket instead of paying the treasury in the same transaction as the
+    /// creator's principal: a treasury that could not receive would otherwise
+    /// revert the creator's payout along with it and lock the entire raise plus
+    /// every unsold token. Settled on its own, that same failure would strand the
+    /// fee and nothing else.
+    ///
+    /// INVARIANT: `collateral_vault_balance == reserve_collateral +
+    /// treasury_owed`. While the sale runs it holds trivially - there is no
+    /// per-swap fee, so this stays 0 and the vault is exactly
+    /// `reserve_collateral` - and `Withdraw` preserves it by zeroing
+    /// `reserve_collateral` in the same step that credits the fee here and leaves
+    /// exactly that much collateral behind in the vault.
+    ///
+    /// WHY THE TREASURY IS PINNED AT CREATION - nothing ever rewrites
+    /// `treasury_id`, and [`Instruction::SweepTreasury`] is the only instruction
+    /// that can pay this bucket out, so a treasury that cannot receive strands it
+    /// **forever**. `CreateSale` therefore takes the treasury as an ACCOUNT and
+    /// requires it to be an already-initialised `Fungible` holding of the pool's
+    /// collateral definition, owned by that definition's own token program. That
+    /// rejects, at the one moment the creator can still fix it for free, each
+    /// shape that could never receive:
+    ///   * **uninitialised** - the fee leg would have to CLAIM it with
+    ///     `Claim::Authorized`, which LEZ admits only for an account that is
+    ///     itself authorized, and [`Instruction::SweepTreasury`] is
+    ///     permissionless with no signer slot at all - so nothing could supply
+    ///     that. A claim also needs the pre-state to be `Account::default()`
+    ///     WHOLE, which the treasury's own key destroys by signing anything at
+    ///     all (LEZ bumps a signer's nonce even when its account is unowned). Not
+    ///     a third-party grief: nobody can modify a DEFAULT-owned account they
+    ///     cannot claim, balance included, so the id cannot be dusted from
+    ///     outside. Requiring an initialised holding removes the branch rather
+    ///     than documenting it.
+    ///   * **wrong definition, or a holding under a different token program** -
+    ///     the fee leg is dispatched on the collateral vault's program and moves
+    ///     the vault's definition, so such a recipient reverts every time and no
+    ///     signature changes that.
+    ///
+    /// The pin cannot decay: LEZ has no instruction that un-initialises a holding
+    /// (`burn` only reduces the balance), so a treasury that passed `CreateSale`
+    /// is still a valid recipient at every later sweep.
+    /// Mirrors `bonding_curve_core::SaleState::treasury_owed`.
+    pub treasury_owed: u128,
+    // ---- poke convenience: NOT stored here, see `WeightObs` ----
+    // `Poke` is permissionless. Writing its output into this account would let
+    // anyone invalidate every in-flight `BuyDisposable` for the price of one
+    // cheap transaction that changes nothing economically, because a private buy
+    // pins the pool account byte-for-byte. The stored weight therefore lives in
+    // the per-pool PDA behind `compute_weight_obs_pda_seed`.
     // ---- controls ----
     pub paused: bool,
     pub block_token_ceiling: u128, // 0 = none
@@ -176,6 +361,12 @@ impl PoolState {
 // Instruction set
 // ---------------------------------------------------------------------------
 
+// APPEND ONLY. The wire discriminant is the declaration index, so inserting or
+// reordering a variant silently re-points every already-encoded instruction at a
+// different arm - and nothing downstream would fail to decode. `Pause` and
+// `Resume` are the sharp edge: they are byte-identical on the wire apart from
+// that index and take identical account lists, so swapping them would resume a
+// paused sale (or pause a live one) with no error anywhere.
 #[derive(Serialize, Deserialize)]
 // CreateSale is much larger than the hot Buy/lifecycle variants, but it is
 // constructed once per sale (cold) and the enum is serde-only (no fixed wire
@@ -183,8 +374,22 @@ impl PoolState {
 // destructures CreateSale by named fields, which a Box<...> tuple variant breaks.
 #[allow(clippy::large_enum_variant)]
 pub enum Instruction {
+    /// Account order: `[pool, token_vault, collateral_vault, token_definition,
+    /// collateral_definition, creator_token_holding, creator_collateral_holding,
+    /// creator, treasury, creator_index, clock]`.
+    ///
+    /// `creator_index` is the creator's [`CreatorIndex`] PDA - claimed here on
+    /// the creator's first pool, appended to on every later one, and pinned to
+    /// `compute_creator_index_pda(self_program_id, creator)` so no one can append
+    /// into another creator's list. It is what makes pool discovery one read per
+    /// creator; pools created before this account existed appear in no index, so
+    /// a reader still needs the brute-force derivation as a fallback.
     CreateSale {
         collateral_definition_id: AccountId,
+        /// The sale's fee sink. Also passed as an ACCOUNT (the `treasury` slot),
+        /// which `create_sale` binds to this id and requires to be an
+        /// already-initialised `Fungible` holding of the collateral definition -
+        /// see [`PoolState::treasury_owed`] for why nothing weaker is settleable.
         treasury_id: AccountId,
         token_name: String,
         token_symbol: String,
@@ -237,8 +442,83 @@ pub enum Instruction {
     Resume { deadline: u64 },
     /// Close after the end timestamp.
     CloseSale { deadline: u64 },
-    /// Creator withdrawal: collateral net of the at-close fee + unsold tokens.
+    /// Creator withdrawal: collateral net of the at-close fee, plus every unsold
+    /// project token.
+    ///
+    /// The fee is ESCROWED into [`PoolState::treasury_owed`] and left sitting in
+    /// the collateral vault for [`Instruction::SweepTreasury`], not paid here -
+    /// a treasury that cannot receive would otherwise take the creator's whole
+    /// payout down with it (see [`PoolState::treasury_owed`]).
+    ///
+    /// Account order: `[pool, token_vault, collateral_vault,
+    /// creator_collateral_holding, creator_token_holding, creator]` - note that
+    /// it names no treasury account at all.
     Withdraw { deadline: u64 },
+    /// Private buy: the buyer's collateral holding and token holding are PRIVATE
+    /// account slots, so the debit and the credit are private notes inside one
+    /// proof. "Disposable" names the single-use NOTE, not an account - there is
+    /// no ephemeral account, no deshield leg and no re-shield leg. Privacy on
+    /// LEZ is a per-slot label positionally aligned 1:1 with the guest's
+    /// `pre_states`, so these are simply private slots of an otherwise ordinary
+    /// buy. (The older design documents in `docs/` describe a 5-leg
+    /// ephemeral-account router that this deliberately does not build.)
+    ///
+    /// A privacy transaction cannot carry the Clock account - every public
+    /// account in one is pinned byte-for-byte at proving time and re-verified
+    /// against live state at inclusion, and `CLOCK_01`'s data is rewritten every
+    /// block - so the price is taken at the caller-supplied `t_buy_ms` and bound
+    /// to real time by the output's timestamp validity window
+    /// (see [`private_window_hi`]).
+    ///
+    /// Account order: `[pool, token_vault, collateral_vault,
+    /// buyer_collateral_holding, buyer_token_holding]`.
+    BuyDisposable {
+        collateral_in: u128,
+        min_tokens_out: u128,
+        t_buy_ms: u64,
+        deadline: u64,
+    },
+    /// Pay the at-close fee that [`Instruction::Withdraw`] escrowed out of the
+    /// collateral vault to the pool's pinned treasury, clearing
+    /// [`PoolState::treasury_owed`] by exactly the amount that moved.
+    ///
+    /// Account order: `[pool, collateral_vault, treasury]`.
+    ///
+    /// **Permissionless, and that is the intent.** No signature is required: the
+    /// only effect available to a submitter is moving the owed fee from the vault
+    /// to the `treasury_id` the pool pinned at creation, so a stranger who sends
+    /// this hands the fee to its rightful owner and pays the gas for the
+    /// privilege. A creator/admin signature would buy nothing and would add a
+    /// party able to withhold settlement.
+    ///
+    /// Not even the treasury's own signature is needed: `CreateSale` pins an
+    /// already-initialised holding, so the fee leg never has to create its
+    /// recipient (see [`PoolState::treasury_owed`]).
+    ///
+    /// Deliberately NOT a leg of `Withdraw` even so: if the creation-time pin were
+    /// ever wrong, a treasury that cannot receive would revert the creator's
+    /// payout with it and lock the whole raise.
+    SweepTreasury { deadline: u64 },
+}
+
+/// Exclusive upper bound of the timestamp validity window a `BuyDisposable`
+/// output carries: the earliest of the caller's `deadline`, `t_buy_ms +
+/// MAX_PRIVATE_WINDOW_MS`, and the sale's own `t_end_ms`.
+///
+/// Clamping to `t_end_ms` is the ONLY end-of-sale check on this path: the guest
+/// has no clock account to compare against, so a window that outlived the sale
+/// would let a proof built before `t_end_ms` settle after it. Clamping to the
+/// caller's `deadline` keeps the usual promise that a transaction expires when
+/// the submitter said it would; the guest must never echo that deadline
+/// unclamped, or the other two bounds do nothing.
+///
+/// `saturating_add` so a `t_buy_ms` near `u64::MAX` cannot wrap the staleness
+/// cap into a bound *below* `t_buy_ms` (the guest runs with overflow-checks
+/// off). The caller must still assert `t_buy_ms < hi`: all three bounds can sit
+/// at or below `t_buy_ms`, and a `from >= to` range is an empty window.
+#[must_use]
+pub fn private_window_hi(deadline: u64, t_buy_ms: u64, t_end_ms: u64) -> u64 {
+    deadline.min(t_buy_ms.saturating_add(MAX_PRIVATE_WINDOW_MS)).min(t_end_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +549,7 @@ pub fn weight_token_q64(
     // never trips for a well-formed pool. (Mirrors `fixed::div_to_q64`'s hard
     // domain assert.)
     let w = w_start_q64 as i128
-        + delta.checked_mul(elapsed).expect("weight interpolation overflows i128") / dur;
+        + delta.checked_mul(elapsed).expect("weight overflow") / dur;
     w as u128
 }
 
@@ -299,6 +579,15 @@ pub const MAX_RESERVE: u128 = 1u128 << 64;
 /// per-swap fee (LBP fee is collected at close).
 ///
 /// `tokens_out = reserve_token * (1 - (rc / (rc + C_in)) ^ (w_collateral / w_token))`.
+///
+/// **Non-decreasing in time at fixed reserves.** As `t` rises the token weight
+/// falls, so the exponent `w_collateral / w_token` rises; the base
+/// `rc / (rc + C_in)` is in `(0,1)`, so `base^x` falls and `tokens_out` rises.
+/// `BuyDisposable` prices at a caller-chosen `t_buy_ms` and leans on exactly
+/// that: an earlier timestamp yields FEWER tokens than the fair amount at
+/// admission, so the pool is never underpaid. Pinned by
+/// `proptests::tokens_out_non_decreasing_in_time`; if that test ever fails,
+/// `t_buy_ms` is unsound and `BuyDisposable` must be pulled.
 #[must_use]
 pub fn buy_tokens_out(
     reserve_token: u128,
@@ -306,15 +595,15 @@ pub fn buy_tokens_out(
     w_token_q64: u128,
     collateral_in: u128,
 ) -> u128 {
-    assert!(w_token_q64 > 0 && w_token_q64 < ONE, "token weight must be in (0,1)");
+    assert!(w_token_q64 > 0 && w_token_q64 < ONE, "weight must be in (0,1)");
     // Keep reserves inside the Q64.64 numerator domain so the price math cannot
     // silently overflow and misprice (vault-drain class bug). Reject cleanly.
     let total_collateral = reserve_collateral
         .checked_add(collateral_in)
-        .expect("LBP collateral reserve + input overflows u128");
+        .expect("collateral reserve overflow");
     assert!(
         total_collateral < MAX_RESERVE,
-        "LBP buy would push the collateral reserve past the 64-bit Q64.64 domain"
+        "reserve exceeds Q64.64 domain"
     );
     let w_collateral_q64 = ONE - w_token_q64;
     let base = div_to_q64(reserve_collateral, reserve_collateral + collateral_in);
@@ -327,7 +616,7 @@ pub fn buy_tokens_out(
 #[must_use]
 pub fn fixed_price_tokens_out(collateral_in: u128, price_q64: u128) -> u128 {
     assert!(price_q64 > 0, "fixed price must be positive");
-    assert!(collateral_in < MAX_RESERVE, "LBP collateral input exceeds the 64-bit Q64.64 domain");
+    assert!(collateral_in < MAX_RESERVE, "input exceeds Q64.64 domain");
     div_to_q64(collateral_in, price_q64)
 }
 
@@ -339,7 +628,7 @@ pub fn close_fee(collateral_balance: u128, fee_bps: u128) -> u128 {
     }
     collateral_balance
         .checked_mul(fee_bps)
-        .expect("collateral * fee_bps overflows u128")
+        .expect("fee overflow")
         .div_ceil(FEE_BPS_DENOMINATOR)
 }
 
@@ -450,6 +739,41 @@ pub fn compute_collateral_vault_pda_seed(pool_id: AccountId) -> PdaSeed {
     PdaSeed::new(hash32(&bytes))
 }
 
+/// Per-pool [`WeightObs`] account. Derived the same way as the two vault PDAs,
+/// so `Poke` can claim it lazily on first use without any creation-time setup.
+#[must_use]
+pub fn compute_weight_obs_pda(program_id: ProgramId, pool_id: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_weight_obs_pda_seed(pool_id))
+}
+
+#[must_use]
+pub fn compute_weight_obs_pda_seed(pool_id: AccountId) -> PdaSeed {
+    let mut bytes = [0u8; 48];
+    bytes[0..32].copy_from_slice(&pool_id.to_bytes());
+    bytes[32..48].copy_from_slice(WEIGHT_OBS_TAG);
+    PdaSeed::new(hash32(&bytes))
+}
+
+/// Per-creator pool index PDA (see [`CreatorIndex`]). Keyed on the creator
+/// ALONE - that is what makes discovery one read per creator - so it is stable
+/// for the life of the account and shared by every pool that creator opens.
+///
+/// The program id is mixed in by `for_public_pda`, so the bonding curve's index
+/// for the same creator is a different account: there is nothing shared between
+/// the two programs to keep in step.
+#[must_use]
+pub fn compute_creator_index_pda(program_id: ProgramId, creator: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_creator_index_pda_seed(creator))
+}
+
+#[must_use]
+pub fn compute_creator_index_pda_seed(creator: AccountId) -> PdaSeed {
+    let mut bytes = [0u8; 48];
+    bytes[0..32].copy_from_slice(&creator.to_bytes());
+    bytes[32..48].copy_from_slice(CREATOR_INDEX_TAG);
+    PdaSeed::new(hash32(&bytes))
+}
+
 // ---------------------------------------------------------------------------
 // Serialization + helpers
 // ---------------------------------------------------------------------------
@@ -464,18 +788,60 @@ impl TryFrom<&Data> for PoolState {
 impl From<&PoolState> for Data {
     fn from(state: &PoolState) -> Self {
         let mut data = Vec::with_capacity(std::mem::size_of_val(state));
-        BorshSerialize::serialize(state, &mut data).expect("Serialization to Vec should not fail");
-        Data::try_from(data).expect("Pool state encoded data should fit into Data")
+        BorshSerialize::serialize(state, &mut data).expect("borsh serialize");
+        Data::try_from(data).expect("PoolState too big")
+    }
+}
+
+impl TryFrom<&Data> for WeightObs {
+    type Error = std::io::Error;
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        WeightObs::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&WeightObs> for Data {
+    fn from(obs: &WeightObs) -> Self {
+        let mut data = Vec::with_capacity(std::mem::size_of_val(obs));
+        BorshSerialize::serialize(obs, &mut data).expect("borsh serialize");
+        Data::try_from(data).expect("WeightObs too big")
+    }
+}
+
+impl TryFrom<&Data> for CreatorIndex {
+    type Error = std::io::Error;
+
+    /// Decodes and AUTHENTICATES: an account that merely happens to Borsh-decode
+    /// is rejected unless it carries the magic and a version this build knows.
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        let index = CreatorIndex::try_from_slice(data.as_ref())?;
+        if index.magic != CREATOR_INDEX_MAGIC || index.version != CREATOR_INDEX_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not an LBP creator index",
+            ));
+        }
+        Ok(index)
+    }
+}
+
+impl From<&CreatorIndex> for Data {
+    fn from(index: &CreatorIndex) -> Self {
+        let mut data = Vec::new();
+        BorshSerialize::serialize(index, &mut data).expect("borsh serialize");
+        // Unreachable: `CreatorIndex::push` bounds the list at MAX_INDEXED_POOLS,
+        // whose encoded size is well under Data's cap.
+        Data::try_from(data).expect("CreatorIndex too big")
     }
 }
 
 #[must_use]
 pub fn read_fungible(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
     let holding = token_core::TokenHolding::try_from(&account.account.data)
-        .unwrap_or_else(|_| panic!("{context}: expected a valid Token Holding account"));
+        .unwrap_or_else(|_| panic!("{context}: not a token holding"));
     match holding {
         token_core::TokenHolding::Fungible { definition_id, balance } => (definition_id, balance),
-        _ => panic!("{context}: expected a Fungible Token Holding account"),
+        _ => panic!("{context}: not Fungible"),
     }
 }
 
@@ -601,5 +967,122 @@ mod tests {
         let data: Data = (&s).into();
         let back = PoolState::try_from(&data).unwrap();
         assert_eq!(s, back);
+    }
+
+    // ---- creator index ----------------------------------------------------
+    //
+    // The account that makes `my-pools` one read per creator. Every test here
+    // fails if the guard it names is removed.
+
+    #[test]
+    fn creator_index_round_trips_through_data() {
+        let creator = AccountId::new([9u8; 32]);
+        let mut index = CreatorIndex::new(creator);
+        index.push(AccountId::new([1u8; 32]));
+        index.push(AccountId::new([2u8; 32]));
+        let data: Data = (&index).into();
+        assert_eq!(CreatorIndex::try_from(&data).unwrap(), index);
+        assert_eq!(
+            index.pool_ids,
+            vec![AccountId::new([1u8; 32]), AccountId::new([2u8; 32])],
+            "ids are kept in creation order"
+        );
+        assert_eq!(index.creator, creator, "a decoded index says whose it is");
+    }
+
+    /// An empty index must decode from a freshly claimed account rather than
+    /// erroring: the first `CreateSale` writes one, and every later read of a
+    /// creator with no pools yet sees it.
+    #[test]
+    fn an_empty_creator_index_round_trips() {
+        let data: Data = (&CreatorIndex::new(AccountId::new([9u8; 32]))).into();
+        assert!(CreatorIndex::try_from(&data).unwrap().pool_ids.is_empty());
+    }
+
+    /// The SDK derives this PDA and reads whatever is there, so the decode has to
+    /// be able to say "not one of mine". Drop the magic check and a `PoolState`
+    /// (or anything else that happens to Borsh-decode) is read as a pool list.
+    #[test]
+    fn a_creator_index_decode_rejects_foreign_bytes() {
+        let pool: Data = (&PoolState::default()).into();
+        assert!(
+            CreatorIndex::try_from(&pool).is_err(),
+            "another account's bytes must never decode as an index"
+        );
+        let mut index = CreatorIndex::new(AccountId::new([9u8; 32]));
+        index.magic = *b"lpad/bci";
+        let data: Data = (&index).into();
+        assert!(
+            CreatorIndex::try_from(&data).is_err(),
+            "the bonding curve's index is not this program's"
+        );
+    }
+
+    /// A newer layout must fail loudly here rather than be mis-parsed by an old
+    /// reader as a shorter list.
+    #[test]
+    fn a_creator_index_decode_rejects_an_unknown_version() {
+        let mut index = CreatorIndex::new(AccountId::new([9u8; 32]));
+        index.version = CREATOR_INDEX_VERSION + 1;
+        let data: Data = (&index).into();
+        assert!(CreatorIndex::try_from(&data).is_err());
+    }
+
+    /// Discovery reads this account knowing only the creator, so the seed must
+    /// depend on the creator - and on nothing else. Two creators, two accounts.
+    #[test]
+    fn creator_index_pda_is_per_creator_and_per_program() {
+        let a = AccountId::new([1u8; 32]);
+        let b = AccountId::new([2u8; 32]);
+        let p: ProgramId = [7u32; 8];
+        let q: ProgramId = [8u32; 8];
+        assert_ne!(
+            compute_creator_index_pda(p, a),
+            compute_creator_index_pda(p, b),
+            "one creator's index must never be another's"
+        );
+        assert_ne!(
+            compute_creator_index_pda(p, a),
+            compute_creator_index_pda(q, a),
+            "the bonding curve's index for the same creator is a different account"
+        );
+        assert_eq!(
+            compute_creator_index_pda(p, a),
+            compute_creator_index_pda(p, a),
+            "and it is derivable, not remembered"
+        );
+    }
+
+    /// The tag is what keeps this PDA off the vault/observation PDAs: a
+    /// collision would write index bytes over a live account.
+    #[test]
+    fn creator_index_pda_does_not_collide_with_the_other_pdas() {
+        let p: ProgramId = [7u32; 8];
+        let id = AccountId::new([1u8; 32]);
+        let index = compute_creator_index_pda(p, id);
+        assert_ne!(index, compute_token_vault_pda(p, id));
+        assert_ne!(index, compute_collateral_vault_pda(p, id));
+        assert_ne!(index, compute_weight_obs_pda(p, id));
+    }
+
+    /// Drop the assert in `push` and this test stops panicking.
+    #[test]
+    #[should_panic(expected = "creator pool index is full")]
+    fn creator_index_push_stops_at_the_bound() {
+        let mut index = CreatorIndex::new(AccountId::new([9u8; 32]));
+        index.pool_ids = vec![AccountId::new([1u8; 32]); MAX_INDEXED_POOLS];
+        index.push(AccountId::new([2u8; 32]));
+    }
+
+    /// ...and the bound it stops at really does still encode: the point of
+    /// asserting early is that the account never reaches `DATA_MAX_LENGTH` and
+    /// fails inside the `Data` conversion instead, which names nothing.
+    #[test]
+    fn a_full_creator_index_still_fits_in_one_account() {
+        let mut index = CreatorIndex::new(AccountId::new([9u8; 32]));
+        index.pool_ids = vec![AccountId::new([1u8; 32]); MAX_INDEXED_POOLS];
+        let data: Data = (&index).into();
+        assert_eq!(data.as_ref().len(), 8 + 2 + 32 + 4 + 32 * MAX_INDEXED_POOLS);
+        assert_eq!(CreatorIndex::try_from(&data).unwrap().pool_ids.len(), MAX_INDEXED_POOLS);
     }
 }

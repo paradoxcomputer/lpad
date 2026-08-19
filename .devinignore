@@ -1,0 +1,4 @@
+# Allow .devin directory for skills
+!.devin/
+!.devin/skills/
+!.devin/skills/*

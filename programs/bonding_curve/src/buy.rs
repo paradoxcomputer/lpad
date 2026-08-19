@@ -1,15 +1,30 @@
-//! Buy instructions - public (keypair holdings) and private (disposable
-//! deshield→buy→re-shield through a fresh ephemeral account A).
+//! Buy instructions - the public ones (keypair holdings, clock-checked) and the
+//! **disposable** one, whose buyer-side holdings are private account slots.
 //!
-//! Pricing and state transition are shared by [`apply_buy`]; the variants differ
-//! only in how collateral arrives and where the tokens go.
+//! "Disposable" names the single-use private NOTE, not an account. Privacy on
+//! LEZ is a per-slot label on an otherwise ordinary transaction, so
+//! [`buy_disposable`] is the same buy as [`buy`] with the buyer's two holdings
+//! marked private: the chained `token::Transfer`s debit and credit them
+//! in-circuit. There is no ephemeral account, no deshield leg and no re-shield
+//! leg - the 5-leg ephemeral-account router that the older design notes under
+//! `docs/` describe is deliberately not what this builds.
+//!
+//! It does not replace anything either: the SDK's `buy-private` saga (deshield,
+//! public buy, re-shield, sequenced across three transactions on the host) stays
+//! as-is. This path is additive and has not yet been exercised against a real
+//! sequencer.
+//!
+//! Pricing and state transition are shared by [`apply_buy`]; the paths differ
+//! only in how collateral arrives, where the tokens go, and how time is proven -
+//! the public paths read the on-chain clock, the disposable path cannot carry
+//! one and is bounded by its transaction validity window instead.
 
 use bonding_curve_core::{
     buy_tokens_out, compute_collateral_vault_pda_seed, compute_token_vault_pda_seed, read_fungible,
     SaleState, SaleStatus,
 };
 use lee_core::{
-    account::{AccountWithMetadata, Data},
+    account::{AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 
@@ -26,8 +41,9 @@ pub struct BuyOutcome {
 /// Validate, price, and apply a buy to `state`. Panics (reverts) on a closed
 /// sale, an exhausted/insufficient reserve, slippage, or an elapsed end
 /// timestamp. `now_ms` is the on-chain clock for public buys, or `None` for the
-/// private path (supply-driven pricing needs no time; the end-timestamp guard is
-/// enforced instead by the SDK's timestamp validity window).
+/// disposable path (supply-driven pricing needs no time; the end-timestamp guard
+/// is enforced instead by the emitted timestamp validity window, see
+/// [`buy_disposable`]).
 #[must_use]
 pub fn apply_buy(
     mut state: SaleState,
@@ -85,16 +101,31 @@ fn buy_transfers(
     treasury: &AccountWithMetadata,
     token_vault: &AccountWithMetadata,
     recipient: &AccountWithMetadata,
-    sale_id: lee_core::account::AccountId,
+    sale_id: AccountId,
     outcome: &BuyOutcome,
 ) -> Vec<ChainedCall> {
-    let token_program_id = payer.account.program_owner;
+    // Dispatch is anchored to the VAULTS, never to the submitter-supplied payer.
+    // `payer.account.program_owner` is attacker-chosen: LEZ deployment is
+    // permissionless, so a buyer can hand us a holding owned by a no-op program
+    // whose `Transfer` echoes its pre-states. Both legs would then move nothing
+    // while `apply_buy` still consumed the reserve and credited the curve - a
+    // free sale-kill, and on a two-way sale a drain, since the inflated
+    // `real_collateral` bounds a later `Sell` payout that runs on the vault's
+    // real token program. The vaults are initialised at `create_sale`, so their
+    // `program_owner` is the trustworthy anchor. Mirrors `sell.rs` and `ata.rs`.
+    let collateral_program_id = collateral_vault.account.program_owner;
+    let token_program_id = token_vault.account.program_owner;
     let mut calls = Vec::with_capacity(3);
 
-    // 1. payer -> collateral vault; inits+claims the vault PDA.
+    // 1. payer -> collateral vault. This leg does NOT create the vault: it is
+    // initialized (and typed to the collateral definition) by `create_sale`'s
+    // `token::InitializeAccount`, and the dispatch id above is read off the vault
+    // account itself - which only resolves to the real token program because the
+    // vault already exists. A buy against a vault that somehow did not exist
+    // therefore fails at dispatch instead of quietly materializing one.
     calls.push(
         ChainedCall::new(
-            token_program_id,
+            collateral_program_id,
             vec![payer.clone(), authorized(collateral_vault)],
             &token_core::Instruction::Transfer { amount_to_transfer: outcome.c_eff },
         )
@@ -104,7 +135,7 @@ fn buy_transfers(
     // 2. payer (post step 1) -> treasury (protocol fee), if any.
     if outcome.fee > 0 {
         calls.push(ChainedCall::new(
-            token_program_id,
+            collateral_program_id,
             vec![shift_balance(payer, outcome.c_eff, false), treasury.clone()],
             &token_core::Instruction::Transfer { amount_to_transfer: outcome.fee },
         ));
@@ -123,13 +154,14 @@ fn buy_transfers(
     calls
 }
 
-/// Validate the vault/treasury accounts against the recorded sale state.
-pub(crate) fn check_accounts(
+/// Validate the sale account and its two vaults against the recorded sale state.
+/// Split out of [`check_accounts`] because the disposable path has no treasury
+/// account to check - it escrows its fee in the collateral vault instead.
+pub(crate) fn check_sale_and_vaults(
     state: &SaleState,
     sale: &AccountWithMetadata,
     token_vault: &AccountWithMetadata,
     collateral_vault: &AccountWithMetadata,
-    treasury: &AccountWithMetadata,
     self_program_id: ProgramId,
 ) {
     assert_eq!(
@@ -141,6 +173,18 @@ pub(crate) fn check_accounts(
         collateral_vault.account_id, state.collateral_vault_id,
         "wrong collateral vault"
     );
+}
+
+/// Validate the vault/treasury accounts against the recorded sale state.
+pub(crate) fn check_accounts(
+    state: &SaleState,
+    sale: &AccountWithMetadata,
+    token_vault: &AccountWithMetadata,
+    collateral_vault: &AccountWithMetadata,
+    treasury: &AccountWithMetadata,
+    self_program_id: ProgramId,
+) {
+    check_sale_and_vaults(state, sale, token_vault, collateral_vault, self_program_id);
     assert_eq!(treasury.account_id, state.treasury_id, "wrong treasury account");
 }
 
@@ -165,16 +209,11 @@ pub fn buy(
     let state = SaleState::try_from(&sale.account.data).expect("invalid sale state account");
     check_accounts(&state, &sale, &token_vault, &collateral_vault, &treasury, self_program_id);
 
-    // SECURITY: the collateral vault is created lazily on the first buy, so it
-    // would otherwise inherit whatever token the first buyer pays with. Require
-    // the buyer to pay the sale's declared collateral token - without this, the
-    // first buyer of a zero-fee sale could pay a worthless token (the fee
-    // transfer that would force a type match is skipped when fee_bps == 0) and
-    // drain the project-token vault.
-    let (buyer_collateral_def, _) = read_fungible(&buyer_collateral_holding, "Buy: buyer collateral holding");
-    assert_eq!(
-        buyer_collateral_def, state.collateral_definition_id,
-        "buyer collateral token does not match the sale's collateral definition"
+    check_buyer_collateral(
+        &buyer_collateral_holding,
+        &collateral_vault,
+        &state,
+        "Buy: buyer collateral holding",
     );
 
     let outcome = apply_buy(state, collateral_in, min_tokens_out, Some(clock_ts));
@@ -210,4 +249,153 @@ fn buy_payer(buyer_collateral_holding: &AccountWithMetadata) -> AccountWithMetad
         "buyer collateral holding must be authorized"
     );
     buyer_collateral_holding.clone()
+}
+
+/// SECURITY: require the buyer to pay the sale's declared collateral token.
+///
+/// The vault is not type-blind: `create_sale` initializes it as a holding of the
+/// collateral definition, so the deposit leg's `token::Transfer` would reject a
+/// foreign token on its own ("Sender and recipient definition id mismatch"). This
+/// check is what turns that into an up-front revert naming the offending account
+/// rather than a failure deep inside a chained call, and it is the only type
+/// check that does not itself depend on the vault having been initialized as
+/// intended. Load-bearing on both keypair paths, and doubly so on the disposable
+/// one: a zero-fee sale emits no fee transfer to force a match, and the
+/// disposable path has no separate fee transfer at all.
+fn check_buyer_collateral(
+    buyer_collateral_holding: &AccountWithMetadata,
+    collateral_vault: &AccountWithMetadata,
+    state: &SaleState,
+    context: &str,
+) {
+    let (buyer_collateral_def, _) = read_fungible(buyer_collateral_holding, context);
+    assert_eq!(
+        buyer_collateral_def, state.collateral_definition_id,
+        "buyer collateral token does not match the sale's collateral definition"
+    );
+    // The definition check above reads the holding's DATA, which a program the
+    // buyer controls can write freely. Bind the holding to the same token
+    // program that owns the vault it pays into, so a no-op substitute cannot
+    // masquerade as collateral. Mirrors `sell.rs`'s seller-holding anchor.
+    assert_eq!(
+        buyer_collateral_holding.account.program_owner,
+        collateral_vault.account.program_owner,
+        "buyer collateral holding is not owned by the sale's collateral token program"
+    );
+}
+
+/// `BuyDisposable` - buy whose buyer-side holdings are **private** account slots,
+/// so the collateral debit and the token credit are private notes inside one
+/// atomic proof. Same pricing, same state transition as [`buy`]; what differs is
+/// the two accounts it does *not* take.
+///
+/// Account order: `[sale, token_vault, collateral_vault, buyer_collateral_holding,
+/// buyer_token_holding]`.
+///
+/// **No clock.** Every public account in a privacy transaction is pinned
+/// byte-for-byte at proving time and re-verified against live state at
+/// inclusion, and the clock account's data is rewritten every block - so a
+/// private buy that carried one could never be included. `apply_buy` is
+/// therefore called with `None`, and the sale's `end_timestamp_ms` is enforced
+/// by the timestamp validity window the guest emits around this call
+/// (`bonding_curve_core::private_window_hi`).
+///
+/// **No treasury.** It is a `CreateSale` argument, shared across sales in lpad's
+/// own bootstrap, so pinning it into a minutes-long proof would let any
+/// fee-bearing activity anywhere invalidate every in-flight private buy. The fee
+/// stays in the collateral vault as `state.treasury_owed` and is handed over
+/// later by [`crate::lifecycle::sweep_treasury`], a permissionless instruction
+/// anyone may trigger; the economics are identical and it costs one fewer chained
+/// call here. That is why the collateral leg below moves the FULL gross
+/// `collateral_in`, and why the vault holds `real_collateral + treasury_owed`.
+#[expect(clippy::too_many_arguments, reason = "fixed protocol account list")]
+#[must_use]
+pub fn buy_disposable(
+    sale: AccountWithMetadata,
+    token_vault: AccountWithMetadata,
+    collateral_vault: AccountWithMetadata,
+    buyer_collateral_holding: AccountWithMetadata,
+    buyer_token_holding: AccountWithMetadata,
+    collateral_in: u128,
+    min_tokens_out: u128,
+    self_program_id: ProgramId,
+) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let state = SaleState::try_from(&sale.account.data).expect("invalid sale state account");
+    check_sale_and_vaults(&state, &sale, &token_vault, &collateral_vault, self_program_id);
+    check_buyer_collateral(
+        &buyer_collateral_holding,
+        &collateral_vault,
+        &state,
+        "BuyDisposable: buyer collateral holding",
+    );
+    let payer = buy_payer(&buyer_collateral_holding);
+
+    let mut outcome = apply_buy(state, collateral_in, min_tokens_out, None);
+    // The fee is escrowed rather than swept: it is already inside the vault (the
+    // collateral leg moves the gross amount), it is just not the creator's.
+    outcome.state.treasury_owed = outcome
+        .state
+        .treasury_owed
+        .checked_add(outcome.fee)
+        .expect("treasury_owed overflow");
+
+    let calls = disposable_transfers(
+        &payer,
+        &collateral_vault,
+        &token_vault,
+        &buyer_token_holding,
+        sale.account_id,
+        collateral_in,
+        &outcome,
+    );
+
+    let mut sale_post = sale.account.clone();
+    sale_post.data = Data::from(&outcome.state);
+
+    let post_states = vec![
+        AccountPostState::new(sale_post),
+        AccountPostState::new(token_vault.account),
+        AccountPostState::new(collateral_vault.account),
+        AccountPostState::new(buyer_collateral_holding.account),
+        AccountPostState::new(buyer_token_holding.account),
+    ];
+    (post_states, calls)
+}
+
+/// The two chained `token::Transfer`s of a disposable buy: `payer →
+/// collateral_vault` for the full gross `collateral_in` (c_eff and fee together,
+/// one leg - the fee is escrowed, not swept), then `token_vault → recipient`
+/// for `tokens_out`. Exactly two, because each additional public account pinned
+/// into the proof is another way for it to be invalidated before inclusion.
+fn disposable_transfers(
+    payer: &AccountWithMetadata,
+    collateral_vault: &AccountWithMetadata,
+    token_vault: &AccountWithMetadata,
+    recipient: &AccountWithMetadata,
+    sale_id: AccountId,
+    collateral_in: u128,
+    outcome: &BuyOutcome,
+) -> Vec<ChainedCall> {
+    // Anchored to the vaults, not to the payer - see `buy_transfers` for why
+    // trusting `payer.account.program_owner` is exploitable.
+    let collateral_program_id = collateral_vault.account.program_owner;
+    let token_program_id = token_vault.account.program_owner;
+    vec![
+        // 1. payer -> collateral vault, gross. Like the public path, this leg does
+        // not create the vault - `create_sale` initializes it, and the dispatch id
+        // is read off the vault account.
+        ChainedCall::new(
+            collateral_program_id,
+            vec![payer.clone(), authorized(collateral_vault)],
+            &token_core::Instruction::Transfer { amount_to_transfer: collateral_in },
+        )
+        .with_pda_seeds(vec![compute_collateral_vault_pda_seed(sale_id)]),
+        // 2. token vault (PDA) -> recipient (tokens_out); inits+claims it if default.
+        ChainedCall::new(
+            token_program_id,
+            vec![authorized(token_vault), recipient.clone()],
+            &token_core::Instruction::Transfer { amount_to_transfer: outcome.tokens_out },
+        )
+        .with_pda_seeds(vec![compute_token_vault_pda_seed(sale_id)]),
+    ]
 }

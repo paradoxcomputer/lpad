@@ -22,8 +22,9 @@
 //! in its own post-states. WLEZ is the executing program AND the
 //! vault's owner → decreasing vault is allowed. `user_native`'s
 //! balance only INCREASES, which is unconstrained. The burn side
-//! still chains `token::Burn` because the holding is owned by the
-//! token program.
+//! still chains `token::Burn`, which requires the holding to be owned
+//! by the token program - the submitter picks that account, so the
+//! body asserts the ownership rather than assuming it.
 //!
 //! End-state invariant: `vault.balance == definition.total_supply`
 //! preserved by construction - both shrink by `amount`.
@@ -71,13 +72,41 @@ pub fn unwrap(
         "user_holding must point at the WLEZ definition"
     );
 
+    // The burn leg dispatches to whoever owns the definition, and the definition
+    // is pinned to the WLEZ PDA above, so this is the real token program.
+    let token_program_id = definition.account.program_owner;
+
+    // SECURITY (defence in depth): pin the holding's OWNER, not just its data.
+    // Everything above only proves what `user_holding` *claims* to be; the
+    // submitter still chooses which account that is, and the vault is debited
+    // by this program's own post-states below whether or not the chained burn
+    // can actually destroy anything.
+    //
+    // Unlike wrap.rs's `user_native` check, this one is not known to close a
+    // live hole, and the asymmetry is worth spelling out. The exploitable shape
+    // there is a leg that silently does NOTHING: a no-op "native" program
+    // leaves both accounts untouched, so total balance is conserved and the
+    // framework's MismatchedTotalBalance rule never fires, while the mint still
+    // runs. Unwrap needs the opposite of a no-op - the real token program would
+    // have to write a burnt-balance post-state for an account it does not own,
+    // and `validate_execution` rejects that with `UnauthorizedDataModification`
+    // (rule 6 in lee/state_machine/core/src/program/mod.rs), which fails the
+    // whole tx so the vault is never debited. Assert it anyway: otherwise WLEZ's
+    // solvency rests on an invariant of *another* program's code (that
+    // `token::Burn` always writes a data change on success), and a panic here
+    // names the actual mistake instead of surfacing as a framework rejection
+    // blamed on the token program.
+    assert_eq!(
+        user_holding.account.program_owner, token_program_id,
+        "user_holding must be owned by the token program that owns the WLEZ \
+         definition - pass the holding that Wrap minted into"
+    );
+
     // Vault must hold at least `amount`.
     assert!(
         vault.account.balance >= amount,
         "Vault balance is below the requested unwrap amount"
     );
-
-    let token_program_id = definition.account.program_owner;
 
     // Mutate vault + user_native directly. WLEZ is the executing program
     // AND the vault's owner, so decreasing vault is allowed under the
@@ -107,9 +136,10 @@ pub fn unwrap(
         AccountPostState::new(user_native_post),
     ];
 
-    // Chained burn - token program is the executing program, holding is
-    // owned by token program, so the burn is allowed under the ownership
-    // rule. The user's tx signature authorises the holding.
+    // Chained burn - the token program is the executing program and, per the
+    // assert above, it also owns `user_holding`, so writing the burnt balance
+    // passes validate_execution's data-modification rule. The user's tx
+    // signature authorises the holding.
     let call_burn = ChainedCall::new(
         token_program_id,
         vec![definition.clone(), user_holding.clone()],

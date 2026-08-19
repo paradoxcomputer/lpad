@@ -26,12 +26,17 @@
 # Derived from the core crate's `Instruction` enum, so the ABI cannot drift from
 # the deployed program. Replaces SPEL's idl-gen, which died with the LEZ v0.2.1
 # migration. An unmapped Rust type is a hard error, never a guess.
+#
+# The program ids come from a built CLI, `cli/target/release/lpad` by default.
+# LPAD_BIN overrides that; both CI gates point it at the debug binary their test
+# step has already built, since the ids are compile-time constants and a release
+# build only to print them would cost minutes.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 LPAD="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 
-[ -x "$LPAD" ] || { echo "✗ lpad CLI not built: $LPAD (cd cli && cargo build --release)" >&2; exit 1; }
+[ -x "$LPAD" ] || { echo "✗ lpad CLI not built: $LPAD (cd cli && cargo build --release, or point LPAD_BIN at one)" >&2; exit 1; }
 
 cd "$REPO"
 python3 - "$LPAD" <<'PY'

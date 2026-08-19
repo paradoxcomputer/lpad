@@ -18,6 +18,14 @@
 #   bash scripts/install-cli.sh --add-path      # append the PATH line to your shell rc
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
+# Pick up the libpcsclite shim setup.sh creates on distros that ship only the
+# runtime library. setup.sh only PRINTS the export, so without this the README's
+# "Run the CLI" step fails to link with `unable to find library -lpcsclite`
+# unless the user edited a shell profile first. Same block as scripts/ci-e2e.sh;
+# an explicit PCSC_LIB_DIR always wins.
+if [ -z "${PCSC_LIB_DIR:-}" ] && [ -e "$HOME/.local/lib/pcsc-shim/libpcsclite.so" ]; then
+  export PCSC_LIB_DIR="$HOME/.local/lib/pcsc-shim"
+fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 BIN_DIR="${LPAD_INSTALL_DIR:-$HOME/.local/bin}"
@@ -45,6 +53,26 @@ for g in bonding_curve lbp wlez; do
 done
 
 # --- 2. build the CLI binary --------------------------------------------------
+# PCSC_LIB_DIR is captured by pcsc-sys's build script and BAKED INTO cargo's
+# cached output, so it survives the variable changing - including when it pointed
+# at a directory that has since disappeared (a temp dir, another checkout). Then
+# every relink fails with `unable to find library -lpcsclite` while the stale
+# binary keeps working, which reads as a broken toolchain. setup.sh reports this
+# and tells you the cure; this script builds, so it applies it: force the build
+# script to re-run by cleaning that one package in the profile the dead path is
+# cached in (`cargo clean -p` alone only touches the dev profile).
+for out in "$REPO/cli"/target/*/build/pcsc-sys-*/output; do
+  [ -e "$out" ] || continue
+  dir=$(sed -n 's/^cargo:rustc-link-search=native=//p' "$out" | head -1)
+  [ -n "$dir" ] && [ ! -d "$dir" ] || continue
+  profile=$(basename "$(dirname "$(dirname "$(dirname "$out")")")")
+  CLEAN=(cargo clean -p pcsc-sys)
+  [ "$profile" = release ] && CLEAN=(cargo clean --release -p pcsc-sys)
+  echo ">> cli/target/$profile caches a pcsc link path that no longer exists ($dir)"
+  echo "   re-running the pcsc-sys build script so the link finds libpcsclite"
+  ( cd "$REPO/cli" && "${CLEAN[@]}" )
+done
+
 [ "$REBUILD" = 1 ] && rm -f "$BINARY"
 if [ ! -x "$BINARY" ] || [ "$REBUILD" = 1 ]; then
   echo ">> building lpad (release)…"
@@ -55,6 +83,11 @@ fi
 [ -x "$BINARY" ] || { echo "build failed: $BINARY missing" >&2; exit 1; }
 
 # --- 3. install the launcher --------------------------------------------------
+# The launcher deliberately does NOT carry PCSC_LIB_DIR: that variable is for the
+# linker, not the loader. The binary records libpcsclite.so.1 as its DT_NEEDED -
+# the shim is only an unversioned symlink to that same runtime library - and the
+# normal loader path already resolves it, so an installed lpad runs on a machine
+# where the shim has been deleted.
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/lpad" <<EOF
 #!/usr/bin/env bash

@@ -8,6 +8,8 @@
 //!   - Wrap rejects zero amounts and mismatched holdings
 //!   - Unwrap emits the expected burn + PDA-authorised native release
 //!   - Unwrap rejects amounts above vault balance
+//!   - Unwrap rejects a holding owned by anything but the definition's token
+//!     program
 //!
 //! The framework's own `validate_execution` (state-preservation,
 //! nonce, balance) is exercised by the integration tests; here we
@@ -476,6 +478,32 @@ fn unwrap_rejects_unauth_user_holding() {
         vault_with(250),
         user_native_with(0, false),
         250,
+        WLEZ_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "user_holding must be owned by the token program")]
+fn unwrap_rejects_foreign_owned_holding() {
+    // Unwrap-side counterpart to `wrap_rejects_foreign_native_program`. The
+    // holding's DATA names the WLEZ definition, but the account is owned by
+    // some other program - the one thing the data check cannot prove. Reject it
+    // before the vault post-state pays out any native.
+    //
+    // Unlike the wrap-side case this is defence in depth, not a closed hole:
+    // the chained `token::Burn` would have to write a post-state for an account
+    // the token program does not own, and `validate_execution` rejects that
+    // (`UnauthorizedDataModification`), reverting the whole tx. The assert
+    // stops WLEZ from *depending* on that other program's behaviour, and turns
+    // an obscure framework rejection into a local, legible failure.
+    let mut foreign_holding = user_holding_with(/*balance*/ 250, /*authorized*/ true);
+    foreign_holding.account.program_owner = [9u32; 8];
+    let _ = crate::unwrap::unwrap(
+        foreign_holding,
+        definition_initialized(250),
+        vault_with(250),
+        user_native_with(0, false),
+        /*amount*/ 250,
         WLEZ_PROGRAM_ID,
     );
 }

@@ -1,0 +1,10 @@
+# Deliberately (almost) empty, and deliberately present.
+#
+# `npm pack` falls back to a package's .gitignore when there is no .npmignore -
+# and this package's .gitignore excludes exactly the binary that gives the
+# package its entire reason to exist. An empty .npmignore stops that fallback,
+# so what ships is decided solely by the "files" allowlist in package.json.
+#
+# npm/smoke-test.sh asserts the packed tarball really does contain bin/lpad, so
+# if this file ever goes missing the test fails rather than a hollow package
+# reaching the registry.

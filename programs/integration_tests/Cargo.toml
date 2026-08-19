@@ -22,4 +22,21 @@ lbp_core = { workspace = true }
 wlez_core = { workspace = true }
 token_core = { workspace = true }
 ata_core = { workspace = true }
+# The native-LEZ program's instruction set. `tests/creator_settlement.rs` submits
+# a real `authenticated_transfer::Initialize` - the one transaction that can give
+# a fresh creator an owner before it signs anything - so the F14 fix is proved
+# against the instruction the SDK and scripts/bootstrap.sh actually send, not
+# against a hand-encoded copy of its wire format.
+authenticated_transfer_core = { workspace = true }
 borsh = { workspace = true }
+
+[dev-dependencies]
+# Only to BUILD an allowlist Merkle tree in the tests. `lbp_core` keeps its
+# `hash32` private and exposes only `merkle_verify` + `allowlist_leaf`, so a
+# multi-member root has to be assembled here - and it must be assembled the way
+# the guest folds it (sorted pair, SHA-256) or the test proves nothing.
+#
+# A dev-dependency deliberately: `integration_tests` is not in any guest's
+# dependency closure, so this cannot move a program image id. Verified with
+# `cargo tree -p lbp_program`.
+sha2 = "0.10"

@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use crate::{
     buy_tokens_out, close_fee,
     fixed::{pow_q64, ONE},
-    weight_token_q64, FEE_BPS_DENOMINATOR, MAX_DURATION_MS, MAX_FEE_BPS,
+    weight_token_q64, FEE_BPS_DENOMINATOR, MAX_DURATION_MS, MAX_FEE_BPS, MAX_RESERVE,
 };
 
 /// A Q64.64 weight strictly inside `(0, 1)` - `num/10000` for `num ∈ 1..=9999`.
@@ -24,8 +24,8 @@ proptest! {
     /// edge where it must stay in-range without wrapping.
     #[test]
     fn weight_monotonic_and_bounded(
-        w_start in weight_q64(),
-        w_end in weight_q64(),
+        w_a in weight_q64(),
+        w_b in weight_q64(),
         t0 in 0u64..=(u64::MAX - MAX_DURATION_MS),
         span in 1u64..=MAX_DURATION_MS,
         // Sample times across the whole schedule (and a little past each end) so
@@ -33,7 +33,14 @@ proptest! {
         a in 0u64..=u64::MAX,
         b in 0u64..=u64::MAX,
     ) {
-        prop_assume!(w_start > w_end); // declining LBP
+        // Constructed, not assumed: `prop_assume!(w_start > w_end)` rejects about
+        // half of all draws, and at a raised PROPTEST_CASES that exhausts the
+        // global reject budget and aborts the run as a failure.
+        let (w_start, w_end) = match w_a.cmp(&w_b) {
+            core::cmp::Ordering::Greater => (w_a, w_b),
+            core::cmp::Ordering::Less => (w_b, w_a),
+            core::cmp::Ordering::Equal => (w_a, w_a - 1),
+        };
         let (t_start, t_end) = (t0, t0 + span);
         let (ta, tb) = (a.min(b), a.max(b));
         let wa = weight_token_q64(w_start, w_end, t_start, t_end, ta);
@@ -80,17 +87,96 @@ proptest! {
         rt in 1_000_000u128..=1_000_000_000u128,
         rc in 1_000u128..=1_000_000u128,
         c_in in 1u128..=100_000u128,
-        w_start in weight_q64(),
-        w_end in weight_q64(),
+        w_a in weight_q64(),
+        w_b in weight_q64(),
     ) {
-        prop_assume!(w_start > w_end);
+        // Constructed, not assumed: `prop_assume!(w_start > w_end)` rejects about
+        // half of all draws, and at a raised PROPTEST_CASES that exhausts the
+        // global reject budget and aborts the run as a failure.
+        let (w_start, w_end) = match w_a.cmp(&w_b) {
+            core::cmp::Ordering::Greater => (w_a, w_b),
+            core::cmp::Ordering::Less => (w_b, w_a),
+            core::cmp::Ordering::Equal => (w_a, w_a - 1),
+        };
         let (t_start, t_end) = (0u64, 1_000_000u64);
         let w_early = weight_token_q64(w_start, w_end, t_start, t_end, 100_000);
         let w_late = weight_token_q64(w_start, w_end, t_start, t_end, 900_000);
-        prop_assume!(w_early < ONE && w_late > 0 && w_late < ONE);
+        // `weight_q64` is strictly inside (0, 1) and the interpolation is
+        // monotone between the endpoints, so both samples are in range by
+        // construction - assert it rather than discarding draws for it.
+        prop_assert!(w_early < ONE && w_late > 0 && w_late < ONE);
         let early = buy_tokens_out(rt, rc, w_early, c_in);
         let late = buy_tokens_out(rt, rc, w_late, c_in);
         prop_assert!(late >= early, "price did not fall over time: late {late} < early {early}");
         prop_assert!(late <= rt, "tokens out exceeds the reserve");
+    }
+
+    /// **This is the safety proof for `BuyDisposable`'s caller-chosen
+    /// `t_buy_ms`.** At FIXED reserves `buy_tokens_out` must be non-decreasing
+    /// in time, so pricing at an earlier timestamp can only hand the buyer
+    /// FEWER tokens than the fair amount at admission - the pool is never
+    /// underpaid by a stale quote. The reserves really are fixed across the two
+    /// times only because a private buy PINS the pool PDA byte-for-byte; see
+    /// the module doc of `lbp_program::buy`.
+    ///
+    /// If this test ever fails a `prop_assert`, `t_buy_ms` is unsound and
+    /// `BuyDisposable` must be pulled from both programs - not "fixed" by
+    /// widening the tolerance below. (A proptest *reject-budget* abort is a
+    /// different thing and does not mean that; the generators below are written
+    /// so that one cannot happen.) The comparison is exact: 2.4M adversarial samples (reserves
+    /// across the whole `MAX_RESERVE` domain, weights across all of `(0,1)`,
+    /// and weight steps of a single Q64.64 ulp - the tightest step at which the
+    /// truncating `pow_q64` could invert) produced no violation at all, so
+    /// there is no integer-rounding slack to allow for.
+    ///
+    /// Reserves span the full domain `buy_tokens_out` accepts; `t_start` sits
+    /// anywhere in `u64` with a span up to `MAX_DURATION_MS`, so the weight
+    /// interpolation is exercised at its edge too.
+    #[test]
+    fn tokens_out_non_decreasing_in_time(
+        rt in 1u128..MAX_RESERVE,
+        rc in 1u128..MAX_RESERVE,
+        c_raw in 1u128..MAX_RESERVE,
+        w_a in weight_q64(),
+        w_b in weight_q64(),
+        t_start in 0u64..=(u64::MAX - MAX_DURATION_MS),
+        span in 1u64..=MAX_DURATION_MS,
+        o1 in 0u64..=u64::MAX,
+        o2 in 0u64..=u64::MAX,
+    ) {
+        // Both preconditions are CONSTRUCTED, not assumed. `prop_assume!` on a
+        // condition that rejects ~half the draws burns proptest's global reject
+        // budget, and a budget abort is reported as a test failure - which, given
+        // what the doc above says a failure means, is the last thing this test
+        // should be able to do for a reason that is not a real violation.
+        //
+        // A declining schedule is the only one BuyDisposable admits, so order the
+        // two weights rather than discarding the half that come out ascending.
+        let (w_start, w_end) = match w_a.cmp(&w_b) {
+            core::cmp::Ordering::Greater => (w_a, w_b),
+            core::cmp::Ordering::Less => (w_b, w_a),
+            // Equal: step one Q64.64 ulp down. `weight_q64` never yields less
+            // than (1 << 64) / 10_000, so the result stays strictly inside (0, 1).
+            core::cmp::Ordering::Equal => (w_a, w_a - 1),
+        };
+        // Keep the input inside the Q64.64 domain buy_tokens_out asserts on by
+        // folding it into the room the reserve leaves, instead of rejecting.
+        let room = MAX_RESERVE - rc - 1;
+        prop_assume!(room > 0); // only when rc == MAX_RESERVE - 1; never in practice
+        let c_in = 1 + (c_raw % room);
+        let t_end = t_start + span;
+        // t_start <= t1 <= t2 < t_end.
+        let (lo, hi) = ((o1 % span).min(o2 % span), (o1 % span).max(o2 % span));
+        let (t1, t2) = (t_start + lo, t_start + hi);
+        let w1 = weight_token_q64(w_start, w_end, t_start, t_end, t1);
+        let w2 = weight_token_q64(w_start, w_end, t_start, t_end, t2);
+        let out1 = buy_tokens_out(rt, rc, w1, c_in);
+        let out2 = buy_tokens_out(rt, rc, w2, c_in);
+        prop_assert!(
+            out1 <= out2,
+            "pricing at the earlier t1={t1} paid MORE than at t2={t2} \
+             (out1={out1} > out2={out2}, rt={rt} rc={rc} c_in={c_in} w1={w1} w2={w2}): \
+             BuyDisposable's t_buy_ms is unsound, pull the instruction"
+        );
     }
 }

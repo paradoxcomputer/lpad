@@ -5,10 +5,17 @@ on:
     branches: [main]
   pull_request:
 
-# Public, GitHub-hosted gate: builds + runs the pure pricing-math core crates
-# (host-only - no zkVM guests, no risc0 toolchain, no sequencer). The full
-# unit + standalone/real-proof E2E runs on a self-hosted `lez` runner via
-# .github/workflows/e2e.yml.
+# Public, GitHub-hosted gate. Everything here runs on a stock ubuntu-latest with
+# no risc0 toolchain, no Docker, no sequencer and no secrets: the guest ELFs are
+# committed, so nothing has to cross-compile them; the E2E tests drive the LEZ
+# state machine in-process; and the parity checks compare constants rather than
+# calling a network.
+#
+# That covers all of scripts/ci-e2e.sh except the two things that genuinely need
+# a bigger machine - rebuilding the guests byte-reproducibly (a pinned Docker
+# toolchain) and the live smoke test (a funded account, real proving). Those stay
+# in .github/workflows/e2e.yml, which is inert until someone registers the
+# self-hosted runner it asks for. So this file is the gate that actually runs.
 #
 # No LEZ checkout step: since the v0.2.1 upgrade every crate depends on the
 # published git tag rather than a local path-patch, so there is nothing to clone.
@@ -27,15 +34,23 @@ jobs:
             ~/.cargo/git
             programs/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('programs/Cargo.lock') }}
+      # wlez_core has no tests of its own today - the wrap/unwrap logic it backs
+      # is tested in wlez_program, which the next job runs. It is named anyway so
+      # that the first test written there is gated the day it lands, instead of
+      # whenever somebody remembers to add the crate to this line.
       - name: core pricing-math unit + property tests
         working-directory: programs
-        run: cargo test -p bonding_curve_core -p lbp_core
+        run: cargo test -p bonding_curve_core -p lbp_core -p wlez_core
 
-  # The launchpad programs' own host logic. Kept separate from the pure-math job
-  # because it pulls the LEZ state-machine crates, which is a much heavier build.
+  # The launchpad programs' own host logic, the pinned-program-id guard, and the
+  # in-process E2E. Kept separate from the pure-math job because it pulls the LEZ
+  # state-machine crates, which is a much heavier build - and kept as three steps
+  # of one job for the same reason: they share almost all of that build, so
+  # splitting them would pay for it twice and leave two jobs writing near
+  # identical caches under one key.
   program-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,22 +62,167 @@ jobs:
             ~/.cargo/git
             programs/target
           key: ${{ runner.os }}-cargo-prog-${{ hashFiles('programs/Cargo.lock') }}
-      - name: program host-logic unit tests
+      # RISC0_SKIP_BUILD keeps this from trying to cross-compile guests: a hosted
+      # runner has no risc0 toolchain, and none is needed, because `lpad_guests
+      # --features artifacts` embeds the ELFs committed under artifacts/lpad/ and
+      # only hashes them.
+      #
+      # That hash is what `pinned_ids_match_artifacts` checks, and it is the most
+      # consequential test in the repo: the image ids in programs/src/lib.rs are
+      # the deployed program ids, and every sale and pool PDA on chain is derived
+      # from them, so an artifact that changes by accident orphans all existing
+      # state and points the CLI at a program nobody deployed. Until now it ran
+      # only on the owner's laptop.
+      #
+      # One cargo invocation rather than two, so the shared LEZ crates resolve to
+      # a single feature set and are built once.
+      - name: program host-logic tests + pinned program ids
         working-directory: programs
-        # RISC0_SKIP_BUILD keeps this from trying to cross-compile guests; the
-        # committed artifacts are only needed by the integration tests, which run
-        # on the self-hosted runner.
         env:
           RISC0_SKIP_BUILD: 1
-        run: cargo test -p bonding_curve_program -p lbp_program -p wlez_program
+        run: >
+          cargo test -p bonding_curve_program -p lbp_program -p wlez_program
+          -p lpad_guests --features artifacts
+      # The integration tests run the committed ELFs against a real LEZ state
+      # machine - create/buy/sell/close on both launchpads, ATA routing, wLEZ
+      # wrap/unwrap, the gated-LBP allowlist, the escrowed-fee sweep, and the
+      # private BuyDisposable path - with no sequencer and no network, which is
+      # what makes them cheap enough to gate a PR.
+      #
+      # No test count is quoted here on purpose. `cargo test` prints the real
+      # one on every run, whereas a number in a comment is a fact nothing checks
+      # - this line said 42 and e2e.yml's header said 22, both of them stale
+      # before the release they were written for even shipped, and a stale count
+      # reads as a promise about coverage that the file cannot keep.
+      #
+      # RISC0_DEV_MODE is deliberately NOT set here, and for most of the suite it
+      # would change nothing: the harness executes the guests in the rv32im
+      # emulator rather than proving them. The exception is the privacy-preserving
+      # tests, which must produce a receipt the circuit will accept and so call
+      # `force_dev_mode()` to set the variable from inside the process - a real
+      # recursive STARK is minutes of CPU per test. That is a deliberate,
+      # per-test opt-in rather than a blanket one, so a future test that verifies
+      # a receipt still cannot be satisfied by a fake one unless it asks to be.
+      - name: in-process E2E against the LEZ state machine
+        working-directory: programs
+        env:
+          RISC0_SKIP_BUILD: 1
+        run: cargo test -p integration_tests
+
+  # The deploy wall, which is the one budget in this repo whose violation is
+  # invisible until the moment it is fatal.
+  #
+  # A program is deployed by submitting its guest ELF inside a transaction, and
+  # the sequencer refuses any transaction larger than `max_block_size -
+  # BLOCK_HEADER_OVERHEAD`: LEZ's `sequencer/service/src/service.rs` reserves a
+  # flat 200 bytes for block-header overhead, and the sequencers this release
+  # targets run a 600 KiB `max_block_size`, so the ceiling is 614,400 - 200 =
+  # 614,200 bytes. A deploy transaction is the ELF plus a 5-byte envelope, which
+  # is the +5 below.
+  #
+  # Cross that line and the program is simply UNDEPLOYABLE - submission comes
+  # back "Transaction too large", and no retry, funding or patience changes it.
+  # Both launchpads have crossed it: `lbp` at 618,012 bytes, and later both of
+  # them at 619,484 and 622,996 once the creator index landed. Nothing in CI
+  # noticed either time. It was found by hand at deploy time, and the first
+  # remedy reached for was cutting assert messages in consensus code down to
+  # telegraphic fragments - paid for by creators reading a revert that moves
+  # their money. This job is the absence that allowed that: with the budget
+  # gated, going over is a red check on the PR that introduced it, and the fix
+  # can be the right one instead of the fastest one.
+  #
+  # No toolchain and no cargo - the ELFs are committed, so this is a stat() per
+  # file and it fails in seconds rather than at the end of an hour-long build.
+  guest-size:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: every guest ELF still fits in a deploy transaction
+        run: |
+          set -euo pipefail
+          # max_block_size (600 KiB) - BLOCK_HEADER_OVERHEAD (200 bytes).
+          max=614200
+          # A deploy transaction is the ELF plus a 5-byte envelope.
+          envelope=5
+          shopt -s nullglob
+          bins=(programs/artifacts/lpad/*.bin)
+          # An empty glob must fail rather than pass vacuously: a gate that
+          # silently checks nothing is worse than no gate, because it reads as
+          # coverage.
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no guest ELFs under programs/artifacts/lpad/ - this gate checked nothing"
+            exit 1
+          fi
+          status=0
+          for bin in "${bins[@]}"; do
+            elf=$(stat -c %s "$bin")
+            tx=$((elf + envelope))
+            if [ "$tx" -gt "$max" ]; then
+              echo "FAIL $bin: deploy tx is $tx bytes, $((tx - max)) over the $max-byte wall - UNDEPLOYABLE"
+              status=1
+            else
+              echo "ok   $bin: deploy tx is $tx bytes, $((max - tx)) spare"
+            fi
+          done
+          exit $status
+
+  # The CLI suite, plus the ABI drift check - which lives here because this is
+  # the job that already has a built `lpad`. tests/cli.rs drives
+  # CARGO_BIN_EXE_lpad, so cargo has to build the binary before it can run a
+  # single test, and build-abi.sh needs one to read the program ids from. The
+  # build is the expensive part: the CLI pulls lpad-sdk and, transitively, the
+  # LEZ wallet and the Logos L1 node crate tree.
+  cli-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Same reason as the SDK job below: the LEZ wallet links keycard support
+      # unconditionally, so libpcsclite is a hard build dependency (see setup.sh).
+      - name: install libpcsclite
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libpcsclite-dev
+      - name: cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cli/target
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('cli/Cargo.lock') }}
+      - name: CLI unit + clap + offline/error tests
+        working-directory: cli
+        env:
+          RISC0_SKIP_BUILD: 1
+        run: cargo test
+      # scripts/build-abi.sh derives each program's zonescan ABI from its core
+      # crate's `Instruction` enum, so a committed JSON that no longer matches is
+      # a descriptor that no longer describes the deployed program - and an
+      # indexer decoding against it mis-reads every instruction without ever
+      # erroring.
+      #
+      # LPAD_BIN points at the debug binary the previous step just built. The
+      # program ids are compile-time constants, identical in either profile, so
+      # this costs one process start instead of a release rebuild.
+      - name: committed ABIs still match the sources
+        env:
+          LPAD_BIN: ${{ github.workspace }}/cli/target/debug/lpad
+        run: |
+          bash scripts/build-abi.sh
+          git diff --exit-code -- programs/artifacts/'*.json'
 
   # The single most important release invariant, and until now it was ungated:
   # does the LEZ version this repo pins agree with what the target sequencers
-  # actually run? sdk/src/lib.rs::chain_parity asserts the pinned LEZ build's
-  # built-in token / authenticated_transfer / clock image ids equal the ones
-  # live on testnet.lez.logos.co and seq-testnet.paradox.computer. When they
-  # disagree every path touching a built-in program is dropped on chain, and the
-  # only symptom is a timeout - so this has to fail here, not in production.
+  # run? sdk/src/lib.rs::chain_parity asserts the pinned LEZ build's built-in
+  # token / authenticated_transfer / clock image ids equal constants that were
+  # read off testnet.lez.logos.co and seq-testnet.paradox.computer while this
+  # release was prepared. It makes no RPC call, so what it catches is lpad
+  # drifting off that snapshot - a LEZ bump, or a dependency bump that moves an
+  # image id - rather than the operators upgrading underneath it. Either way,
+  # when the two disagree every path touching a built-in program is dropped on
+  # chain and the only symptom is a timeout, so this has to fail here, not in
+  # production.
   #
   # It is a separate job because `sdk` is its own workspace: `cargo test` in
   # cli/ builds lpad-sdk but runs only lpad-cli's tests. It is also the heaviest

@@ -1,7 +1,7 @@
 {
   "program_schemas": [
     {
-      "id": "56acf09871bfeb40220d95b8263aa9d68f2615987517b742587148178c081522",
+      "id": "1fe89b0f1888e6554a27c35b2c35ae5a6c5879d8fe0cb784c31ce3331fb93d33",
       "instruction": {
         "enum": [
           {
@@ -177,12 +177,42 @@
                 "type": "u64"
               }
             ]
+          },
+          {
+            "name": "BuyDisposable",
+            "fields": [
+              {
+                "name": "collateral_in",
+                "type": "u128"
+              },
+              {
+                "name": "min_tokens_out",
+                "type": "u128"
+              },
+              {
+                "name": "not_before_ms",
+                "type": "u64"
+              },
+              {
+                "name": "deadline",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "SweepTreasury",
+            "fields": [
+              {
+                "name": "deadline",
+                "type": "u64"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "id": "bf027b7009aeeb3d0c04b96b08425660b35ac42089ee963ff492ffc272b6bc9b",
+      "id": "153a85520d6023c9d8adeb45e58b93027aa26d8a3a30fca51c81988170fbd928",
       "instruction": {
         "enum": [
           {
@@ -396,12 +426,42 @@
                 "type": "u64"
               }
             ]
+          },
+          {
+            "name": "BuyDisposable",
+            "fields": [
+              {
+                "name": "collateral_in",
+                "type": "u128"
+              },
+              {
+                "name": "min_tokens_out",
+                "type": "u128"
+              },
+              {
+                "name": "t_buy_ms",
+                "type": "u64"
+              },
+              {
+                "name": "deadline",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "SweepTreasury",
+            "fields": [
+              {
+                "name": "deadline",
+                "type": "u64"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "id": "cce98686cad26bfc7c1e53a8eb99c856939985a9bbb9d030052cbaf9588e0227",
+      "id": "d37f6d4de769f06975f7eccfa494a0592ac4846b5a260fb17c44232771353084",
       "instruction": {
         "enum": [
           {

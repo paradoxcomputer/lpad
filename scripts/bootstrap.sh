@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Bootstrap an LPAD end-to-end run against a REAL LEZ sequencer.
 #
-# There is no bundled local sequencer any more: lpad targets the Logos testnet or
-# the Paradox Computer testnet. Both run a LEZ build whose built-in program image
-# ids match v0.2.4, which is what the crates are pinned to - see the `chain_parity`
-# tests in sdk/src/lib.rs, which assert that equality.
+# There is no bundled local sequencer any more, and lpad ships none: it targets the
+# Logos testnet, the Paradox Computer testnet, or any other real sequencer you point
+# it at - including a LEZ node you install and run yourself, which the CLI calls
+# `local` and which this script takes as its plain http(s) URL. The two public ones
+# run a LEZ build whose built-in program image ids match v0.2.4, which is what the
+# crates are pinned to - see the `chain_parity` tests in sdk/src/lib.rs, which assert
+# that equality. A node of your own must be v0.2.4 for the same reason.
 #
 # What it does: configures a wallet against the chosen network, self-funds a
 # creator from the pinata faucet (or an explicit funder key), mints a project +
@@ -41,7 +44,11 @@ HOME_DIR="${LPAD_WALLET_HOME:-$HOME/.lpad}"
 PW="${LPAD_WALLET_PW:-lpaddev}"
 OUT="${LPAD_BOOTSTRAP_OUT:-$REPO/scripts/bootstrap.env}"
 
-# Network aliases, kept in step with `lpad_sdk::Network`.
+# Network aliases. `lpad_sdk::Network` additionally has `local` / `local=<url>` for
+# a sequencer the user runs; there is deliberately no alias for it HERE, because an
+# alias would also have to name a wallet home and bootstrap has none for it - give
+# the URL instead, which the http(s) arm below already accepts, and set
+# LPAD_WALLET_HOME so a local run does not land in testnet's ~/.lpad.
 NETWORK="${LPAD_NETWORK:-testnet}"
 case "$NETWORK" in
   testnet|logos) SEQ_ADDR="https://testnet.lez.logos.co" ;;
@@ -66,6 +73,16 @@ BUYER_FUND=100000; PRIV_FUND=50000; INIT_DUST=1
 # binary (key management, deploys, transfers) and seeds its config from the
 # checkout, so both must exist. Say so concretely - "wallet CLI not built" alone
 # sent people looking for an lpad target that was never going to appear.
+#
+# Deploying is no longer what makes that true, and the claim above is narrower than
+# it used to be: `lpad network` deploys the three guests through the SDK, with no
+# wallet binary and no checkout, so putting lpad on a chain of your own needs
+# neither. This script keeps driving the wallet binary because everything ELSE it
+# does has no lpad equivalent - creating keypairs, minting tokens, claiming the
+# pinata faucet, sending native LEZ - and because it must run unattended, while the
+# CLI's deploy sits behind an interactive confirmation. The wallet_config.json
+# template below lives only in the checkout too. So: unchanged for bootstrap, gone
+# for anyone who only wants the programs deployed.
 if [ ! -x "$WALLET" ]; then
   echo "✗ LEZ wallet binary not found: $WALLET" >&2
   echo "  scripts/bootstrap.sh drives the upstream wallet; building lpad does not produce it." >&2
@@ -109,9 +126,15 @@ d["sequencers"] = [{"sequencer_addr": addr}]
 # Budget = seq_poll_max_retries x seq_poll_timeout. Blocks are ~46-50s on the
 # public sequencers, so the old 10 x 20s gave under 4 blocks of patience and a
 # slow inclusion was indistinguishable from a rejection. 60 x 30s ~= 30 min.
-d["seq_poll_timeout"] = "30s"
-d["seq_tx_poll_max_blocks"] = 40
-d["seq_poll_max_retries"] = 60
+# Budget per tx = seq_tx_poll_max_blocks x seq_poll_timeout = 30 x 10s = 5 min,
+# ~6 blocks. Polling returns as soon as the tx is seen (~1 block), so this is
+# only ever spent on something that did NOT land - and spending 30 minutes on
+# that, per transaction, was the biggest source of dead time in a real run.
+# seq_poll_max_retries bounds an INNER loop with no sleep between calls (60 meant
+# 61 RPC round trips per round), not the wall clock.
+d["seq_poll_timeout"] = "10s"
+d["seq_tx_poll_max_blocks"] = 30
+d["seq_poll_max_retries"] = 2
 # On open the wallet probes every sequencer absent from statistics.json this many
 # times (default 100). The CLI opens a fresh wallet per command, and over a WAN
 # hop that default is punishing.
@@ -205,8 +228,20 @@ if [ -n "$FUNDER" ]; then
     || { echo "✗ transfer from $FUNDER failed - is it funded?" >&2; exit 1; }
 else
   echo ">> claiming the pinata faucet into the creator (no LPAD_FUNDER given)"
-  w pinata claim --to "$CREATOR" >&2 2>&1 \
-    || { echo "✗ pinata claim failed. This chain may not run pinata, or it is drained." >&2
+  # Retried, because the common failure here is not a broken chain: the pinata
+  # re-seeds its challenge on every successful claim, so a solution mined while
+  # somebody else claimed first scores against a challenge that no longer exists.
+  # Nothing is consumed and there is no cooldown - the answer is simply to mine
+  # again. Unretried, that lost race aborts a bootstrap that is otherwise fine,
+  # and on a fresh wallet it aborts it before anything else has been built.
+  claimed=0
+  for attempt in 1 2 3 4 5; do
+    if w pinata claim --to "$CREATOR" >&2 2>&1; then claimed=1; break; fi
+    echo "   pinata claim attempt $attempt failed - re-mining against the new challenge" >&2
+    sleep 15
+  done
+  [ "$claimed" = "1" ] \
+    || { echo "✗ pinata claim failed 5 times. This chain may not run pinata, or it is drained." >&2
          echo "  Supply a funded account instead: LPAD_FUNDER=Public/... LPAD_FUNDER_KEY=<hex>" >&2
          exit 1; }
 fi
@@ -255,6 +290,12 @@ if [ "${LPAD_SKIP_DEPLOY:-0}" = "1" ]; then echo ">> skipping deploys (LPAD_SKIP
 #
 # Stage 2's range is bounded and always reported, so a "deployed" verdict can
 # never come from a scan that quietly gave up early.
+#
+# The SDK's own deploy path (`LaunchpadClient::deploy_program`, which `lpad network`
+# drives) reuses this discipline rather than reinventing it: same prior check, same
+# bytes-in-a-block verification, same bounded-and-reported fallback scan, and the
+# same LPAD_DEPLOY_SCAN_BLOCKS knob. Keep the two in step - a silent non-deploy is
+# the failure this project has actually paid for, twice.
 # Which guests are ALREADY on chain, as "<name> <block>" lines. Filled by
 # prescan_deployed(); consulted by deploy_verified() to skip a pointless deploy.
 DEPLOY_PRESCAN=""

@@ -25,9 +25,12 @@ struct Cli {
     /// Wallet storage path (default: $LEE_WALLET_HOME_DIR/storage.json).
     #[arg(long, global = true)]
     storage: Option<String>,
-    /// Sequencer to target: `testnet` (default), `paradox`, or an http(s) URL.
-    /// Overrides the wallet config for this invocation only. There is no bundled
-    /// local sequencer.
+    /// Sequencer to target: `testnet`, `paradox`, `local`, `local=<url>`, or an
+    /// http(s) URL. Omitted, the network remembered for this wallet is used (and
+    /// on first run, `lpad` asks - see `lpad network`). Overrides the remembered
+    /// choice for this invocation ONLY - it is never written back - and only the
+    /// sequencer, not the wallet home. lpad bundles no local sequencer: `local`
+    /// is a LEZ node you run yourself.
     #[arg(long, global = true)]
     network: Option<String>,
     #[command(subcommand)]
@@ -43,6 +46,42 @@ enum Cmd {
         #[arg(long)]
         account: String,
     },
+    /// Choose which sequencer this wallet talks to, and remember it.
+    ///
+    /// Re-opens the first-run picker and writes the answer next to the wallet,
+    /// so later commands are silent. With `--json` it prints the current
+    /// selection instead of asking. Needs a terminal: a run with no TTY reports
+    /// how to set the choice non-interactively rather than waiting on stdin.
+    ///
+    /// Picking a sequencer you run yourself also checks whether lpad's three
+    /// programs are on that chain, and offers to deploy them if not.
+    Network {
+        /// Ask whether this build's three programs are on the chain, without
+        /// picking anything and without a terminal.
+        ///
+        /// The same check the picker runs, reachable from a script. It exits 1
+        /// when a program has no record, because a transaction against a
+        /// program that is not deployed is dropped from the mempool and reads
+        /// as a timeout, not an error - so a script that carries on burns its
+        /// whole poll budget to learn nothing. "No record" is not proof of
+        /// absence, though: a chain that was reset can have forgotten the
+        /// deploy transaction while still running the program, so the message
+        /// says so and `scripts/verify-deployment.sh` is the stronger answer.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Create a brand-new wallet: fresh keys, and the recovery phrase printed once.
+    ///
+    /// The first command a new install can run. Everything else needs a wallet to
+    /// already exist, and until this landed nothing in lpad could make one - only
+    /// the LEZ `wallet` binary could, which meant a LEZ checkout for anyone who
+    /// had installed the CLI on its own.
+    ///
+    /// Refuses to run if a wallet is already there. It asks for no password,
+    /// because the one upstream accepts is discarded (`Storage::new` is a
+    /// `TODO: Use password for storage encryption`) - `storage.json` is plain
+    /// JSON holding raw keys, so it is created `0600` and the output says so.
+    InitWallet,
     /// Print a program's deployed id (RISC0 image id) from its guest ELF.
     ProgramId {
         /// Which program: `bc`, `lbp`, `ata`, or `wlez`.
@@ -50,10 +89,76 @@ enum Cmd {
     },
     /// [online] Your token balances across every wallet account (public + shielded).
     MyBalance,
-    /// [online] Bonding-curve sales your wallet created (derivable ids; no LP-0012 indexer).
-    MySales,
-    /// [online] LBP pools your wallet created (derivable ids; no LP-0012 indexer).
-    MyPools,
+    /// [online] Bonding-curve sales your wallet created.
+    ///
+    /// The bonding-curve program records every sale it creates in a per-creator
+    /// index account on chain, so this is one read per account of yours - not a
+    /// search. It sees a sale created on another machine holding the same key,
+    /// or in a wallet home restored from backup, with no flag needed. The state
+    /// printed is always read live.
+    ///
+    /// (There is still no event indexer (LP-0012), so listing OTHER people's
+    /// sales is not possible - only your own.)
+    MySales {
+        /// Also re-derive and probe every candidate id. Needed only for a sale
+        /// created by an older lpad build, from before the on-chain index
+        /// existed: nothing recorded those, so finding one means guessing every
+        /// PDA your wallet could have made. Very slow (thousands of reads), and
+        /// a one-off - whatever it finds is remembered for later runs. Only
+        /// adds to what is listed, never drops.
+        #[arg(long)]
+        refresh: bool,
+        /// Treat EVERY public account as a possible creator, not just identity
+        /// accounts (implies --refresh). Needed only for a sale created with
+        /// `--creator <a token holding>`; the index half of that is cheap and
+        /// usually answers on its own.
+        #[arg(long)]
+        deep: bool,
+    },
+    /// [online] LBP pools your wallet created.
+    ///
+    /// Same discovery and flags as `my-sales`, against the LBP program's own
+    /// per-creator index.
+    MyPools {
+        /// Also re-derive and probe every candidate id - see `my-sales
+        /// --refresh`. Needed only for a pool created before the on-chain index
+        /// existed. Very slow, and only ever adds to what is listed.
+        #[arg(long)]
+        refresh: bool,
+        /// Treat EVERY public account as a possible creator, not just identity
+        /// accounts (implies --refresh). Needed only for a pool created with
+        /// `--creator <a token holding>`.
+        #[arg(long)]
+        deep: bool,
+    },
+    /// [online] Claim native LEZ from this chain's pinata faucet (mines its proof-of-work).
+    ///
+    /// The faucet checks no signature and no allowlist: it pays whoever submits
+    /// a proof-of-work solution for the challenge in its own account, so a
+    /// wallet with nothing in it can fund itself. lpad solves that puzzle
+    /// locally - one core, seconds at the difficulty LEZ ships, and each extra
+    /// difficulty byte costs 256x more work (`LPAD_FAUCET_MAX_ATTEMPTS=<n>`
+    /// raises the give-up budget). This is the first step of the first-run
+    /// story: `faucet` -> `wrap` -> `bc create-token-sale` -> `bc buy`.
+    ///
+    /// The chain sets no cooldown and keeps no record of who was paid, so
+    /// running it again claims again. What can fail is a race: every successful
+    /// claim re-seeds the challenge, so a claim that lands while lpad is mining
+    /// invalidates the solution being searched for - and the remedy is just to
+    /// re-run.
+    ///
+    /// `--to` names the recipient; omitted, the wallet's default signing account
+    /// is used. An account that has never been initialised under the
+    /// authenticated-transfer program cannot receive native LEZ at all, so it is
+    /// initialised first (one extra transaction) when this wallet holds its key.
+    Faucet {
+        #[arg(
+            long,
+            help = "recipient account (default: this wallet's default signing account); \
+                    initialised for native LEZ first if it never was"
+        )]
+        to: Option<String>,
+    },
     /// [online] Wrap native LEZ into WLEZ (the collateral token for native-LEZ sales).
     Wrap { #[arg(long)] amount: u128, #[arg(long)] from: Option<String> },
     /// [online] Unwrap WLEZ back into native LEZ.
@@ -72,6 +177,11 @@ enum Cmd {
     /// rejected (the token program claims the recipient as Authorized, which the
     /// runtime only grants to a signer), and the LEZ wallet has no equivalent
     /// command, so use this to make a recipient before sending to it.
+    ///
+    /// It is also the required FIRST step of `bc create-sale` / `lbp
+    /// create-sale`: both programs reject a create whose `--treasury` is not
+    /// already an initialised holding of the sale's collateral definition. Run
+    /// it against `--collateral-def` and pass the id it prints as `--treasury`.
     InitHolding {
         #[arg(long = "token-def")]
         token_def: String,
@@ -106,6 +216,19 @@ enum BcCmd {
     /// [online] Read a sale's on-chain state.
     SaleInfo { #[arg(long)] sale: String },
     /// [online] Launch a token: mint (name+symbol) + open a sale raising in native LEZ.
+    ///
+    /// Prints the sale id, the token definition, the sale's CREATOR and the
+    /// creator's token holding. Record the last two: `bc close --creator` and
+    /// `bc withdraw --creator --creator-token` accept no other accounts.
+    ///
+    /// With `--private` they are the only record. That path funds the deposit
+    /// from a shielded holding through a fresh, unlinkable creator account that
+    /// this command mints - so the wallet holds its key without knowing which
+    /// account it is, and nothing on chain ties it back to you. `bc sale-info
+    /// --sale <id>` can recover the creator from the sale id later; the
+    /// creator's token holding it cannot. Keep both to yourself: they are
+    /// unlinkable on chain, and publishing them beside the sale id is what
+    /// undoes that.
     CreateTokenSale {
         #[arg(long)] name: String,
         #[arg(long)] symbol: String,
@@ -120,10 +243,22 @@ enum BcCmd {
         #[arg(long, default_value_t = 0)] nonce: u64,
     },
     /// [online] Create a new sale (deposits D+R project tokens).
+    ///
+    /// `--treasury` has to EXIST FIRST. The program requires an initialised
+    /// fungible holding of `--collateral-def` and rejects the create otherwise:
+    /// run `lpad init-holding --token-def <collateral-def>` and pass the id it
+    /// prints. It is pinned into the sale permanently - nothing can change it
+    /// afterwards, and it is where every protocol fee this sale ever charges is
+    /// paid. (`bc create-token-sale` creates one for you instead.)
     CreateSale {
         #[arg(long)] program: Option<String>,
         #[arg(long = "collateral-def")] collateral_def: String,
-        #[arg(long)] treasury: String,
+        #[arg(
+            long,
+            help = "fee sink: an EXISTING fungible holding of --collateral-def (make one with \
+                    `lpad init-holding --token-def <collateral-def>`); pinned permanently"
+        )]
+        treasury: String,
         #[arg(long = "creator-token-holding")] creator_token_holding: String,
         #[arg(long)] creator: String,
         #[arg(long = "sale-quantity")] sale_quantity: u128,
@@ -142,6 +277,18 @@ enum BcCmd {
     BuyAta { #[arg(long)] program: Option<String>, #[arg(long = "ata-program")] ata_program: Option<String>, #[arg(long)] sale: String, #[arg(long)] owner: Option<String>, #[arg(long = "fund-from")] fund_from: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Private buy: deshield → buy → re-shield via a fresh ephemeral account A.
     BuyPrivate { #[arg(long)] program: Option<String>, #[arg(long)] sale: String, #[arg(long = "user-collateral")] user_collateral: Option<String>, #[arg(long = "user-token")] user_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
+    /// [online] Private buy in ONE atomic transaction (no public intermediate state).
+    ///
+    /// Both of your holdings - the collateral you pay with and the tokens you
+    /// receive - are private account slots of a single transaction, so the debit
+    /// and the credit are private notes inside one proof. There is no ephemeral
+    /// account, no deshield leg and no re-shield leg: either the whole buy lands
+    /// or nothing happened, so a crash cannot leave a trade publicly visible the
+    /// way `buy-private` can.
+    ///
+    /// Slower per operation than any public path: this proves the buy locally as
+    /// a real recursive STARK, which takes minutes, not seconds.
+    BuyDisposable { #[arg(long)] program: Option<String>, #[arg(long)] sale: String, #[arg(long = "user-collateral")] user_collateral: Option<String>, #[arg(long = "user-token")] user_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Sell tokens back into a sale (public path).
     Sell { #[arg(long)] program: Option<String>, #[arg(long)] sale: String, #[arg(long = "seller-token")] seller_token: String, #[arg(long = "seller-collateral")] seller_collateral: String, #[arg(long)] tokens: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Sell via Associated Token Accounts (RFP Func: ATAs). `--fund-from` seeds the token ATA first.
@@ -152,6 +299,29 @@ enum BcCmd {
     Close { #[arg(long)] program: Option<String>, #[arg(long)] sale: String, #[arg(long)] creator: String },
     /// [online] Withdraw collateral + remaining tokens (creator).
     Withdraw { #[arg(long)] program: Option<String>, #[arg(long)] sale: String, #[arg(long = "creator-collateral")] creator_collateral: String, #[arg(long = "creator-token")] creator_token: String, #[arg(long)] creator: String },
+    /// [online] Settle the escrowed private-buy fee to the sale's treasury (anyone).
+    ///
+    /// A private (disposable) buy cannot pay the treasury as part of the buy - a
+    /// privacy proof pins every public account it touches byte-for-byte, and a
+    /// shared treasury changes constantly - so its protocol fee is escrowed in
+    /// the sale's collateral vault instead. This hands that escrow over to the
+    /// treasury pinned into the sale when it was created.
+    ///
+    /// Permissionless: no creator flag, because there is no authority to prove.
+    /// The fee can only ever reach that pinned treasury, so anyone may send
+    /// this; a stranger who does simply pays the gas to move someone else's fee
+    /// to its rightful owner. Works while the sale is still open as well as
+    /// after it closes, and errors when nothing is owed. `bc sale-info` reports
+    /// the outstanding amount.
+    ///
+    /// No signer at all, and no exception to it: nothing signs for the treasury.
+    /// There is nothing a signature could authorise - `create-sale` refuses a
+    /// treasury that is not already an initialised holding of the collateral
+    /// definition, and the guest rejects an unowned treasury before it looks at
+    /// anything else. So "the treasury is unowned" is not a wallet problem and
+    /// no retry fixes it: the sale's pinned treasury disagrees with chain state,
+    /// and it wants reporting.
+    SweepTreasury { #[arg(long)] program: Option<String>, #[arg(long)] sale: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -176,11 +346,41 @@ enum LbpCmd {
     BuyAta { #[arg(long)] program: Option<String>, #[arg(long = "ata-program")] ata_program: Option<String>, #[arg(long)] pool: String, #[arg(long)] owner: Option<String>, #[arg(long = "fund-from")] fund_from: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Private buy: deshield → buy → re-shield via a fresh ephemeral account A (public buy leg priced at the live clock).
     BuyPrivate { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long = "user-collateral")] user_collateral: Option<String>, #[arg(long = "user-token")] user_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
+    /// [online] Private buy in ONE atomic transaction (no public intermediate state).
+    ///
+    /// Both of your holdings - the collateral you pay with and the tokens you
+    /// receive - are private account slots of a single transaction, so the debit
+    /// and the credit are private notes inside one proof. There is no ephemeral
+    /// account, no deshield leg and no re-shield leg: either the whole buy lands
+    /// or nothing happened, so a crash cannot leave a trade publicly visible the
+    /// way `buy-private` can.
+    ///
+    /// A privacy transaction cannot carry the on-chain clock, so the buy is
+    /// priced at the timestamp it was built at and its slippage floor is quoted
+    /// at that same timestamp. The sale's own end time still binds it: the
+    /// transaction's validity window is clamped to it.
+    ///
+    /// Slower per operation than any public path: this proves the buy locally as
+    /// a real recursive STARK, which takes minutes, not seconds.
+    BuyDisposable { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long = "user-collateral")] user_collateral: Option<String>, #[arg(long = "user-token")] user_token: Option<String>, #[arg(long = "in")] collateral_in: u128, #[arg(long = "min-out")] min_out: Option<u128>, #[arg(long = "slippage-bps", default_value_t = 100)] slippage_bps: u128 },
     /// [online] Create an LBP sale (deposits project tokens; weights in [0,1] as `0.99` or `99/100`).
+    ///
+    /// `--treasury` has to EXIST FIRST, exactly as on the bonding curve: the
+    /// program requires an initialised fungible holding of `--collateral-def`
+    /// and rejects the create otherwise, so run
+    /// `lpad init-holding --token-def <collateral-def>` and pass the id it
+    /// prints. It is pinned into the pool permanently, and it is the only
+    /// account `lbp sweep-treasury` can ever pay - including at `--fee-bps 0`,
+    /// which is checked the same way.
     CreateSale {
         #[arg(long)] program: Option<String>,
         #[arg(long = "collateral-def")] collateral_def: String,
-        #[arg(long)] treasury: String,
+        #[arg(
+            long,
+            help = "fee sink: an EXISTING fungible holding of --collateral-def (make one with \
+                    `lpad init-holding --token-def <collateral-def>`); pinned permanently"
+        )]
+        treasury: String,
         #[arg(long = "creator-token-holding")] creator_token_holding: String,
         #[arg(long = "creator-collateral-holding")] creator_collateral_holding: String,
         #[arg(long)] creator: String,
@@ -207,20 +407,89 @@ enum LbpCmd {
     Close { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long)] creator: String },
     /// [online] Withdraw raised collateral + unsold tokens minus the at-close fee (creator).
     Withdraw { #[arg(long)] program: Option<String>, #[arg(long)] pool: String, #[arg(long = "creator-collateral")] creator_collateral: String, #[arg(long = "creator-token")] creator_token: String, #[arg(long)] creator: String },
+    /// [online] Settle the escrowed at-close fee to the pool's treasury (anyone).
+    ///
+    /// `lbp withdraw` does not pay the treasury: it escrows the at-close fee in
+    /// the collateral vault and hands the creator the rest. Paying both in one
+    /// transaction meant a treasury that cannot receive - uninitialised, wrong
+    /// token definition, wrong token program - reverted the creator's payout with
+    /// it, locking the entire raise and every unsold token in a closed pool
+    /// forever. This settles that escrow to the treasury pinned into the pool
+    /// when it was created.
+    ///
+    /// Permissionless: no creator flag, because there is no authority to prove.
+    /// The fee can only ever reach that pinned treasury, so anyone may send this
+    /// and a stranger who does just pays the gas. Errors when nothing is owed -
+    /// the fee accrues at withdrawal, so close and withdraw first. `lbp
+    /// pool-info` reports the outstanding amount.
+    ///
+    /// Same absence of exceptions as `bc sweep-treasury`: nothing signs for the
+    /// treasury, an uninitialised one cannot be bootstrapped by sweeping to it,
+    /// and `create-sale` is where a treasury that could never receive is caught.
+    SweepTreasury { #[arg(long)] program: Option<String>, #[arg(long)] pool: String },
+}
+
+/// Whether this invocation is one the wordmark belongs above: no arguments at
+/// all, or a help request.
+///
+/// Pure and iterator-taking so the rule is testable without a terminal or a
+/// child process. `--json` vetoes, and it vetoes even when combined with
+/// `--help`, because the machine-readable flag is the more specific statement of
+/// intent.
+fn wants_banner(args: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    let args: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+    if args.iter().any(|a| a == "--json") {
+        return false;
+    }
+    args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h" || a == "help")
 }
 
 fn main() {
+    // Before anything else can panic. A raw Rust backtrace is the one output
+    // that tells a user nothing they can act on, and `lpad` is the sort of tool
+    // people run once, under time pressure, against real funds.
+    ui::install_panic_hook();
+    // The wordmark goes above the help screen, and only there: a bare `lpad`, or
+    // any `--help`. Read from the raw argv BEFORE clap runs, because clap prints
+    // help and exits from inside `parse()` - there is no later hook to attach to.
+    //
+    // `--json` suppresses it. The banner is on stderr and so cannot corrupt a
+    // `--json` stdout anyway, but a caller who asked for machine output has said
+    // what they want from this process, and a logo is not it.
+    if wants_banner(std::env::args_os().skip(1)) {
+        ui::banner();
+    }
     let Cli { json, config, storage, network, cmd } = Cli::parse();
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone(), json);
     let result = match cmd {
         Cmd::Status => paths().and_then(|p| online::status(&p, json)),
         Cmd::Balance { account } => {
             parse_account(&account).and_then(|a| paths().and_then(|p| online::balance(&p, a, json)))
         }
+        // `resolve_no_prompt`: this command IS the picker, so the first-run
+        // prompt inside `resolve` would ask the same question twice.
+        Cmd::Network { check } => {
+            WalletPaths::resolve_no_prompt(config.clone(), storage.clone(), network.clone())
+                .and_then(|p| online::network(&p, network.is_some(), check, json))
+        }
+        // Deliberately not `paths()`: that resolves a wallet that must already
+        // exist, which is precisely what this command is for creating.
+        Cmd::InitWallet => {
+            WalletPaths::resolve_for_create(config.clone(), storage.clone(), network.clone())
+                .and_then(|p| online::init_wallet(&p, json))
+        }
         Cmd::ProgramId { which } => online::program_id(&which, json),
         Cmd::MyBalance => paths().and_then(|p| online::my_balance(&p, json)),
-        Cmd::MySales => paths().and_then(|p| online::my_sales(&p, json)),
-        Cmd::MyPools => paths().and_then(|p| online::my_pools(&p, json)),
+        Cmd::MySales { refresh, deep } => {
+            paths().and_then(|p| online::my_sales(&p, refresh, deep, json))
+        }
+        Cmd::MyPools { refresh, deep } => {
+            paths().and_then(|p| online::my_pools(&p, refresh, deep, json))
+        }
+        // `--to` is parsed BEFORE the wallet is opened, like `balance`: a typo'd
+        // account should not cost a sequencer round trip to hear about.
+        Cmd::Faucet { to } => to.as_deref().map(parse_account).transpose()
+            .and_then(|to| paths().and_then(|p| online::faucet(&p, to, json))),
         Cmd::Wrap { amount, from } => paths().and_then(|p| online::wrap(&p, amount, from, json)),
         Cmd::Unwrap { amount } => paths().and_then(|p| online::unwrap(&p, amount, json)),
         Cmd::Shield { token_def, amount } => parse_account(&token_def).and_then(|d| paths().and_then(|p| online::shield(&p, d, amount, json))),
@@ -238,7 +507,12 @@ fn main() {
         Cmd::Lbp(c) => run_lbp(c, json, &config, &storage, &network),
     };
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        // Sanitised like every other printed line: an error can quote text the
+        // chain or the sequencer supplied - a guest's revert string, a rejected
+        // account's on-chain name. `ui::error` sanitises, wraps and reddens it
+        // on a TTY, so this no longer calls `safe` itself - doing both would
+        // escape the escapes.
+        ui::error(&e);
         std::process::exit(1);
     }
 }
@@ -276,7 +550,7 @@ fn check_vc_domain(vc: u128) -> Result<(), String> {
 
 fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<String>, network: &Option<String>) -> Result<(), String> {
     use bonding_curve_core as bc;
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone(), json);
     // --program is optional: default to the bonding-curve guest's image id.
     let prog_id = |p: Option<String>| match p {
         Some(s) => parse_program(&s),
@@ -400,6 +674,9 @@ fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<Stri
         BcCmd::BuyPrivate { program, sale, user_collateral, user_token, collateral_in, min_out, slippage_bps } => {
             return online::bc_buy_private(&paths()?, prog_id(program)?, parse_account(&sale)?, user_collateral, user_token, collateral_in, min_out, slippage_bps, json);
         }
+        BcCmd::BuyDisposable { program, sale, user_collateral, user_token, collateral_in, min_out, slippage_bps } => {
+            return online::bc_buy_disposable(&paths()?, prog_id(program)?, parse_account(&sale)?, user_collateral, user_token, collateral_in, min_out, slippage_bps, json);
+        }
         BcCmd::SellPrivate { program, sale, user_token, user_collateral, tokens, min_out, slippage_bps } => {
             return online::bc_sell_private(&paths()?, prog_id(program)?, parse_account(&sale)?, user_token, user_collateral, tokens, min_out, slippage_bps, json);
         }
@@ -412,13 +689,16 @@ fn run_bc(cmd: BcCmd, json: bool, config: &Option<String>, storage: &Option<Stri
         BcCmd::Withdraw { program, sale, creator_collateral, creator_token, creator } => {
             return online::bc_withdraw(&paths()?, prog_id(program)?, parse_account(&sale)?, parse_account(&creator_collateral)?, parse_account(&creator_token)?, parse_account(&creator)?, json);
         }
+        BcCmd::SweepTreasury { program, sale } => {
+            return online::bc_sweep_treasury(&paths()?, prog_id(program)?, parse_account(&sale)?, json);
+        }
     }
     Ok(())
 }
 
 fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<String>, network: &Option<String>) -> Result<(), String> {
     use lbp_core as lbp;
-    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone());
+    let paths = || WalletPaths::resolve(config.clone(), storage.clone(), network.clone(), json);
     // --program is optional: default to the LBP guest's image id.
     let prog_id = |p: Option<String>| match p {
         Some(s) => parse_program(&s),
@@ -495,6 +775,9 @@ fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<St
         LbpCmd::BuyPrivate { program, pool, user_collateral, user_token, collateral_in, min_out, slippage_bps } => {
             return online::lbp_buy_private(&paths()?, prog_id(program)?, parse_account(&pool)?, user_collateral, user_token, collateral_in, min_out, slippage_bps, json);
         }
+        LbpCmd::BuyDisposable { program, pool, user_collateral, user_token, collateral_in, min_out, slippage_bps } => {
+            return online::lbp_buy_disposable(&paths()?, prog_id(program)?, parse_account(&pool)?, user_collateral, user_token, collateral_in, min_out, slippage_bps, json);
+        }
         LbpCmd::CreateSale { program, collateral_def, treasury, creator_token_holding, creator_collateral_holding, creator, token_deposit, collateral_seed, w_start, w_end, t_start, t_end, fee_bps, block_ceiling, allowlist_root, fixed_price, min_duration, nonce } => {
             let a = online::LbpCreate {
                 program: prog_id(program)?,
@@ -525,6 +808,9 @@ fn run_lbp(cmd: LbpCmd, json: bool, config: &Option<String>, storage: &Option<St
         LbpCmd::Withdraw { program, pool, creator_collateral, creator_token, creator } => {
             return online::lbp_withdraw(&paths()?, prog_id(program)?, parse_account(&pool)?, parse_account(&creator_collateral)?, parse_account(&creator_token)?, parse_account(&creator)?, json);
         }
+        LbpCmd::SweepTreasury { program, pool } => {
+            return online::lbp_sweep_treasury(&paths()?, prog_id(program)?, parse_account(&pool)?, json);
+        }
     }
     Ok(())
 }
@@ -544,6 +830,38 @@ fn print_ids(json: bool, label: &str, primary: AccountId, token_vault: AccountId
 
 #[cfg(test)]
 mod cli_tests {
+
+    /// The wordmark belongs above a help screen and nowhere else. In particular
+    /// it must never precede real work: `lpad bc buy` printing a logo before
+    /// moving funds is noise at the worst possible moment.
+    #[test]
+    fn the_banner_is_for_help_screens_only() {
+        let a = |v: &[&str]| {
+            super::wants_banner(v.iter().map(|s| std::ffi::OsString::from(*s)))
+        };
+        assert!(a(&[]), "bare `lpad` is the help screen");
+        assert!(a(&["--help"]));
+        assert!(a(&["-h"]));
+        assert!(a(&["help"]));
+        assert!(a(&["bc", "--help"]), "a subcommand's help is still a help screen");
+        assert!(!a(&["status"]));
+        assert!(!a(&["bc", "buy", "--sale", "x", "--in", "1"]));
+        assert!(!a(&["--network", "testnet", "faucet"]));
+    }
+
+    /// `--json` vetoes it, and vetoes it even alongside `--help`: a caller who
+    /// asked for machine output has said what they want from this process. The
+    /// banner is on stderr and so could not corrupt a `--json` stdout anyway -
+    /// this is about not making them ask twice.
+    #[test]
+    fn json_suppresses_the_banner_even_with_help() {
+        let a = |v: &[&str]| {
+            super::wants_banner(v.iter().map(|s| std::ffi::OsString::from(*s)))
+        };
+        assert!(!a(&["--json"]));
+        assert!(!a(&["--json", "--help"]));
+        assert!(!a(&["--help", "--json"]));
+    }
     use super::Cli;
     use clap::CommandFactory;
 

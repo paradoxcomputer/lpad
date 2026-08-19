@@ -1,10 +1,28 @@
 name: e2e (self-hosted)
 
-# Full unit + guest-artifact + in-process E2E, plus an optional live smoke test
-# against a real sequencer. Requires a self-hosted runner labelled
-# [self-hosted, lez] with the risc0 toolchain (and Docker, to rebuild guests).
-# Register one for this repo to enable; the public `ci` workflow (core math +
-# program tests) gates PRs in the meantime.
+# Inert until a runner exists. Every job below asks for a [self-hosted, lez]
+# runner; none has ever been registered for this repo. The nightly schedule that
+# used to be here queued 63 runs against that non-existent runner, every one of
+# which expired as `cancelled` with an empty runner name, after which GitHub
+# disabled the workflow for inactivity. The schedule is gone - what is left is
+# workflow_dispatch, so a run happens only when someone who has a runner asks for
+# one. Note that re-enabling a workflow GitHub has disabled is a manual step in
+# the Actions tab, on top of registering the runner itself.
+#
+# What stays here is what a GitHub-hosted runner genuinely cannot do:
+#   * guest-reproducibility rebuilds the committed guests, which is only
+#     byte-deterministic inside the pinned Docker toolchain;
+#   * live-smoke needs a funded account on a real network and real proving,
+#     minutes per private operation;
+#   * e2e re-runs the whole gate on a machine with the risc0 toolchain, which
+#     setup.sh verifies before anything else.
+# Everything else that used to be gated only here - the pinned program ids, the
+# whole in-process E2E suite, the CLI suite, the ABI drift check - now runs on
+# ubuntu-latest in .github/workflows/ci.yml, because none of it needs the
+# toolchain, Docker, a sequencer or a secret. That is the gate PRs actually get.
+# (No test count: this line used to say 22, and the suite had outgrown it before
+# the release shipped. `cargo test` prints the real number on every run; see the
+# note above the integration-test step in ci.yml.)
 #
 # There is no local sequencer to start any more - lpad targets the Logos and
 # Paradox testnets. The `e2e` job drives the LEZ state machine in-process with no
@@ -18,8 +36,11 @@ on:
         description: 'Live smoke test against this network (testnet|paradox|URL). Blank = skip.'
         required: false
         default: ''
-  schedule:
-    - cron: '0 4 * * *'
+      live_private:
+        description: 'Also run the 12 real STARKs (~7-10 HOURS). Default: public pass only, ~40 min.'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   e2e:
@@ -33,7 +54,10 @@ jobs:
         run: bash scripts/ci-e2e.sh
 
   # Reproducibility gate: rebuilding the committed guests must not change a byte,
-  # because their image ids ARE the deployed program ids.
+  # because their image ids ARE the deployed program ids. LPAD_VERIFY_GUESTS=1 is
+  # what turns the rebuild on; ci-e2e.sh now aborts if it is set and Docker is not
+  # usable, because this job passing green on a machine that never ran the rebuild
+  # is the exact failure this job exists to prevent.
   guest-reproducibility:
     runs-on: [self-hosted, lez]
     timeout-minutes: 60
@@ -49,7 +73,16 @@ jobs:
   live-smoke:
     if: github.event_name == 'workflow_dispatch' && inputs.live_network != ''
     runs-on: [self-hosted, lez]
-    timeout-minutes: 180
+    # Two budgets, because there are two runs and one number cannot cover both.
+    # The public pass is ~30-34 transactions at a ~46-50s block: 35-40 minutes,
+    # 90 leaves room for a poll-out. The private pass adds 12 real recursive
+    # STARKs - `buy-private` and `sell-private` are 3-tx sagas that prove TWICE
+    # each, so nine private COMMANDS are twelve proofs - at a measured 38-40 min
+    # apiece, strictly serial (one prover is ~8-9 GB and saturates every core).
+    # That is 7-10 hours. It used to be budgeted at 180 minutes flat, which
+    # killed the job about a third of the way into the private ops and reported
+    # red for a sweep that was working.
+    timeout-minutes: ${{ inputs.live_private && 900 || 90 }}
     steps:
       - uses: actions/checkout@v4
       - name: live smoke test against ${{ inputs.live_network }}
@@ -57,6 +90,10 @@ jobs:
           LPAD_NETWORK: ${{ inputs.live_network }}
           LPAD_FUNDER: ${{ secrets.LPAD_FUNDER }}
           LPAD_FUNDER_KEY: ${{ secrets.LPAD_FUNDER_KEY }}
+          # Public by default. A skipped private op is REPORTED, never counted as
+          # a pass, so a default run is honestly labelled partial rather than
+          # quietly incomplete.
+          LPAD_SKIP_PRIVATE: ${{ inputs.live_private && '0' || '1' }}
         run: |
           (cd cli && cargo build --release --bin lpad)
           bash scripts/bootstrap.sh

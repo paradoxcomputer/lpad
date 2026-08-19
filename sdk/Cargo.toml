@@ -33,7 +33,12 @@ common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git",
 sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.4", features = [
     "client"
 ] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+# `time` is not decoration: sync_private bounds the wallet's block-stream sync
+# with tokio::time::timeout, and that module does not exist without it. Feature
+# unification would very likely turn it on anyway via the wallet crate, which is
+# exactly why it is named here - a dependency's private choice is not something
+# this crate's compilation should rest on.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Silence the wallet's stdout chatter so it never corrupts the CLI's (possibly

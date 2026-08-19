@@ -1,0 +1,593 @@
+name: release (npm)
+
+# Builds the `lpad` binary for every platform package under npm/, assembles the
+# packages, proves each one installs and runs, and publishes them to npm.
+#
+# What this file is NOT: it does not re-run the test suite. .github/workflows/ci.yml
+# gates the code; this gates the *packaging* - the ways a release can be broken
+# even though every test passed: a binary that links something the target machine
+# lacks, a tarball that turns out to be hollow, an npm version that disagrees with
+# what `lpad --version` prints, or a wrapper published before the platform package
+# its optionalDependencies pin. Tagging a commit that never went green in ci.yml is
+# therefore NOT caught here; that is the tagger's job.
+#
+# Honesty about what has actually run, because this repo has been bitten by a
+# workflow that looked green and had never executed (see the header of e2e.yml -
+# 63 queued runs against a runner nobody had registered):
+#
+#   * NOTHING in this file has ever run on GitHub. It is new.
+#   * The linux-x64 path is the one that has been exercised end to end, locally:
+#     npm/smoke-test.sh assembles that package from a real build and passes 26/26,
+#     including proof that the bundled libpcsclite is what makes the CLI start.
+#     The steps below are that script's steps, in the same order.
+#   * The two macOS matrix entries are ASPIRATIONAL. No lpad binary has ever been
+#     built on macOS in this project. They are expected to be the easy case (macOS
+#     needs no bundled library - the smartcard dependency is satisfied by the
+#     system PCSC framework) but the first release will be the first execution,
+#     and "expected to work" is a claim, not a result. If macOS fails, the honest
+#     fix is to drop those two entries and the matching optionalDependencies from
+#     npm/lpad/package.json rather than to publish packages that do not run.
+#
+# Triggering:
+#   * push of a v* tag  -> build, verify, publish (needs secrets.NPM_TOKEN)
+#   * workflow_dispatch -> dry run by default; builds and packs everything and
+#                          publishes nothing. Set dry_run=false on a TAG ref to
+#                          finish a release whose publish step failed.
+# Publishing requires a version tag either way, because the tag/crate-version
+# check below has nothing to compare against on a branch.
+#
+# Cutting a release is therefore: decide the number, bump [package] version in
+# cli/Cargo.toml, commit, tag vX.Y.Z, push the tag. Nothing here edits a version -
+# npm/scripts/prepare-packages.sh derives all four npm versions from that one
+# field, so the crate is the only place the number is ever written by hand, and
+# the tag only has to agree with it.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and pack everything, publish nothing'
+        type: boolean
+        default: true
+
+# Read-only: this workflow publishes to npm and touches nothing in the repo. It
+# deliberately does not create a GitHub Release or push anything back - that is a
+# separate decision with a separate blast radius.
+permissions:
+  contents: read
+
+# One release at a time per ref, and never cancel one in flight: the publish
+# order (platform packages, then the wrapper) is the whole point, and a cancelled
+# run between those two steps is exactly the half-published state this file exists
+# to avoid. A second run of the same tag is safe - the publish steps skip versions
+# that already exist - but it must not overlap with the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap gate, deliberately first and deliberately separate: it fails in seconds
+  # on the mistake that would otherwise be discovered after an hour of Rust builds
+  # on three runners. It catches a release whose tag and contents disagree - v0.3.0
+  # cut from a tree whose cli/Cargo.toml still says 0.2.0 - which would publish an
+  # npm package whose `lpad --version` contradicts its own version number and
+  # leaves no way to tell which of the two lied.
+  #
+  # It also packs the wrapper, once, here: the wrapper is pure JavaScript and is
+  # byte-identical wherever it is packed, and packing it once means the tarball
+  # every platform tests the launcher against is the same file that gets published,
+  # rather than a look-alike rebuilt per job.
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The version is DERIVED, never typed. prepare-packages.sh reads the
+      # [package] version out of cli/Cargo.toml and stamps all four package.json
+      # files plus the wrapper's optionalDependencies in one pass; this job then
+      # reads the result back out of npm/lpad/package.json. Re-parsing Cargo.toml
+      # here with a second awk would create a second parser to drift from the
+      # first, so the script's answer is the only answer in this file.
+      - name: version gate - crate version, tag, and the pinned optionalDependencies
+        id: gate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # Snapshot before normalising, so the check below compares the COMMITTED
+          # tree against the derived one. Deliberately NOT `git diff`: npm/ may be
+          # untracked, and git reports no difference for untracked files at all -
+          # which would make this gate silently pass for exactly the tree that
+          # needs checking. (The check this replaced had the same defect by a
+          # different route: it ran after the rewrite and inspected its output.)
+          rm -rf "$RUNNER_TEMP/npm-before"
+          cp -a npm "$RUNNER_TEMP/npm-before"
+          bash npm/scripts/prepare-packages.sh
+          VERSION="$(node -p "require('./npm/lpad/package.json').version")"
+          echo ">> npm version derived from cli/Cargo.toml: $VERSION"
+
+          # A tag ref must agree with the crate. Dispatches on a branch have no
+          # tag to check, and cannot publish either (see below), so they only
+          # report what they would have released.
+          case "$REF" in
+            refs/tags/*)
+              TAG="${REF_NAME#v}"
+              if [ "$TAG" != "$VERSION" ]; then
+                echo "!! tag $REF_NAME says $TAG, cli/Cargo.toml says $VERSION" >&2
+                echo "   These must match. Either the tag was cut before the version bump" >&2
+                echo "   landed, or the bump was never committed. Fix cli/Cargo.toml, or" >&2
+                echo "   delete and re-cut the tag - do not publish a package whose" >&2
+                echo "   'lpad --version' contradicts its own version number." >&2
+                exit 1
+              fi
+              echo ">> tag $REF_NAME matches the crate version"
+              IS_TAG=1 ;;
+            *)
+              echo ">> $REF is not a version tag: this run can build and pack, but not publish"
+              IS_TAG=0 ;;
+          esac
+
+          # prepare-packages.sh has just rewritten every package.json from the
+          # crate version. If that CHANGED anything, the committed tree disagreed
+          # with the crate - a stale pin, a hand-edited version, a caret range -
+          # and the release would be built from something nobody reviewed. Catch
+          # it here rather than shipping the correction silently.
+          #
+          # This assertion replaced an equivalent-looking node check that ran
+          # AFTER the same script and therefore inspected the file it had just
+          # normalised: it printed PASS for every input, including a caret range.
+          # A gate that cannot fail is worse than no gate, because it is believed.
+          if ! diff -r "$RUNNER_TEMP/npm-before" npm >/dev/null 2>&1; then
+            echo "!! npm/ package.json files disagreed with cli/Cargo.toml ($VERSION)." >&2
+            echo "   prepare-packages.sh had to change them:" >&2
+            diff -r "$RUNNER_TEMP/npm-before" npm >&2 || true
+            echo "   Commit the regenerated files (bash npm/scripts/prepare-packages.sh)" >&2
+            echo "   so the released tree is the reviewed tree." >&2
+            exit 1
+          fi
+          echo ">> npm/ package versions already matched the crate"
+
+          # And the wrapper's optionalDependencies must be EXACT pins on this same
+          # version. A caret range would let npm pair a new launcher with an old
+          # binary, which installs happily and then lies about what it is.
+          node -e '
+            const pkg = require("./npm/lpad/package.json");
+            const want = process.argv[1];
+            let bad = 0;
+            for (const [dep, range] of Object.entries(pkg.optionalDependencies || {})) {
+              if (range !== want) { console.error(`!! ${dep} is pinned to ${range}, expected exactly ${want}`); bad = 1; }
+            }
+            if (bad) process.exit(1);
+            console.log(">> optionalDependencies are exact pins on " + want);
+          ' "$VERSION"
+
+          # Publishing needs a version tag AND an explicit non-dry-run. On a tag
+          # push DRY_RUN is empty (the input does not exist for that event), which
+          # is the publishing case; workflow_dispatch defaults it to true.
+          PUBLISH=false
+          if [ "$IS_TAG" = 1 ] && [ "${DRY_RUN:-false}" != "true" ]; then PUBLISH=true; fi
+          echo ">> publish: $PUBLISH"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+      # Packed with the same `npm pack` a publish runs, so the file listing below
+      # is exactly what a user would receive.
+      - name: pack the wrapper
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tgz"
+          npm pack --pack-destination "$RUNNER_TEMP/tgz" ./npm/lpad
+          tar tzf "$RUNNER_TEMP"/tgz/*.tgz | sed 's/^/   /'
+          # Assert the launcher actually survived the `files` allowlist. The
+          # platform packs already assert their binary; the wrapper did not, and
+          # a hollow wrapper is the worse failure - it is the only name a user
+          # types, and it would install cleanly and then have nothing to exec.
+          if ! tar tzf "$RUNNER_TEMP"/tgz/*.tgz | grep -qx 'package/bin/lpad.js'; then
+            echo "!! the wrapper tarball has no package/bin/lpad.js - check npm/lpad's" >&2
+            echo "   'files' allowlist and .npmignore before releasing." >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-wrapper
+          path: ${{ runner.temp }}/tgz/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # One binary per platform package, built on its own architecture. No
+  # cross-compilation: a cross-built macOS binary needs an SDK on the Linux runner
+  # and would be the least tested artifact in the release, which is the wrong thing
+  # to hand to users who cannot easily build from source.
+  #
+  # Separate from `prepare` because it is the expensive half (the CLI pulls
+  # lpad-sdk and, transitively, the LEZ wallet and the whole Logos L1 node crate
+  # tree - ci.yml budgets 90 minutes for that build on Linux), and separate from
+  # the publish jobs because a binary that fails to run must never reach the step
+  # that uploads it.
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 120
+    # fail-fast off: on a release, knowing that two of three platforms are fine is
+    # worth more than saving runner minutes. Nothing publishes unless all three
+    # succeed anyway - see the publish job.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 rather than ubuntu-latest, ON PURPOSE. The binary's glibc
+          # floor is a property of the machine that built it, and the npm package
+          # advertises >= 2.34 (Ubuntu 22.04+/Debian 12+). 22.04 ships glibc 2.35
+          # and is the oldest image GitHub still offers; ubuntu-latest is 24.04
+          # (glibc 2.39) and would quietly raise the floor, breaking users who were
+          # fine yesterday. The step below asserts the floor rather than trusting
+          # this comment.
+          - pkg: lpad-linux-x64
+            runs-on: ubuntu-22.04
+            exercised: 'yes - npm/smoke-test.sh passes 26/26 locally on this layout'
+          # macos-14 is the Apple-silicon image. Never run for this project.
+          - pkg: lpad-darwin-arm64
+            runs-on: macos-14
+            exercised: 'no - never built'
+          # macos-13 is the last Intel image, and GitHub has been retiring Intel
+          # macOS runners; if this entry stops scheduling, the replacement is the
+          # newer Intel image (macos-15-intel) - and note that moving to it raises
+          # the macOS floor unless MACOSX_DEPLOYMENT_TARGET keeps it pinned, which
+          # is why that variable is set explicitly below instead of being left to
+          # whatever the image defaults to.
+          - pkg: lpad-darwin-x64
+            runs-on: macos-13
+            exercised: 'no - never built'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: what this matrix entry is
+        env:
+          PKG: ${{ matrix.pkg }}
+          EXERCISED: ${{ matrix.exercised }}
+        run: |
+          echo ">> $PKG on $RUNNER_OS/$RUNNER_ARCH"
+          echo ">> previously exercised: $EXERCISED"
+      # Same reason as ci.yml's cli-tests job: the LEZ wallet links keycard support
+      # unconditionally (`keycard_wallet.workspace = true`, no feature gate), so
+      # libpcsclite is a hard *build* dependency even though lpad never opens a card
+      # reader. macOS needs nothing here - pcsc-sys binds the system PCSC framework.
+      - name: install libpcsclite (Linux only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libpcsclite-dev
+      # Registry and git sources only, and keyed on the lockfile: those are
+      # immutable downloads worth reusing. cli/target is deliberately NOT cached -
+      # a release binary should be built from scratch, so a stale incremental
+      # artifact from an older tag cannot end up inside a published tarball. The
+      # cost is one cold build per release, which is the cheapest insurance in
+      # this file.
+      - name: cache cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ hashFiles('cli/Cargo.lock') }}
+      # RISC0_SKIP_BUILD=1 is what scripts/install-cli.sh uses, and it is not an
+      # optimisation: there is no risc0 toolchain on these runners and none is
+      # needed, because the guest ELFs are the committed reproducible artifacts
+      # under programs/artifacts/lpad and are embedded from there. Their image ids
+      # are the deployed program ids, so a release must ship exactly those bytes
+      # rather than a fresh local rebuild of them.
+      #
+      # MACOSX_DEPLOYMENT_TARGET pins the macOS floor to Big Sur - the oldest
+      # release that exists on Apple silicon - so that a newer runner image cannot
+      # silently raise it the way a newer Ubuntu image would raise the glibc floor.
+      - name: build lpad (release)
+        working-directory: cli
+        env:
+          RISC0_SKIP_BUILD: '1'
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: cargo build --release --bin lpad
+      # The Linux package is assembled by the same script used locally, rather than
+      # by a copy of it inlined here: if the packaging is wrong it is then wrong the
+      # same way in both places. It copies the binary in, resolves libpcsclite via
+      # `ldd` on that exact binary (not a guessed multiarch path) and dereferences
+      # the symlink, since a dangling link is all that would survive being packed.
+      - name: assemble ${{ matrix.pkg }} (Linux)
+        if: runner.os == 'Linux'
+        run: bash npm/scripts/assemble-linux-x64.sh
+      # macOS has no equivalent script because there is nothing to bundle: one
+      # binary, mode 0755.
+      - name: assemble ${{ matrix.pkg }} (macOS)
+        if: runner.os == 'macOS'
+        env:
+          PKG: ${{ matrix.pkg }}
+        run: |
+          set -euo pipefail
+          mkdir -p "npm/$PKG/bin"
+          install -m 0755 cli/target/release/lpad "npm/$PKG/bin/lpad"
+          ls -l "npm/$PKG/bin/lpad"
+      # The floor the package claims, enforced instead of merely printed.
+      # assemble-linux-x64.sh reports the highest versioned glibc symbol the binary
+      # needs; if that exceeds 2.34 then lpad-linux-x64's description, npm/README.md
+      # and the launcher's error text are all lying, and the first user on Ubuntu
+      # 22.04 finds out with a loader error. Raising the floor is a decision, not an
+      # accident - so make it fail here and be taken deliberately.
+      - name: assert the glibc floor is still 2.34 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          FLOOR="$(objdump -T npm/lpad-linux-x64/bin/lpad \
+                   | sed -n 's/.*GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)"
+          echo ">> highest versioned glibc symbol required: GLIBC_${FLOOR:-none}"
+          [ -n "$FLOOR" ] || { echo "!! no GLIBC_* symbols found - is this the right binary?" >&2; exit 1; }
+          if [ "$(printf '%s\n2.34\n' "$FLOOR" | sort -V | tail -1)" != "2.34" ]; then
+            echo "!! this binary needs GLIBC_$FLOOR but the package advertises >= 2.34" >&2
+            echo "   The build image got newer. Either build on an older image, or change" >&2
+            echo "   the floor everywhere it is documented (npm/lpad-linux-x64/package.json" >&2
+            echo "   description, npm/README.md, npm/lpad/bin/lpad.js) and drop the users" >&2
+            echo "   below it on purpose." >&2
+            exit 1
+          fi
+          ldd npm/lpad-linux-x64/bin/lpad | sed 's/^/   /'
+      # The macOS counterpart of the glibc floor: nothing outside /usr/lib and
+      # /System may appear in the load commands. A runner has Homebrew on it, and a
+      # binary that picked up /opt/homebrew/... would run perfectly here and fail on
+      # every user's machine.
+      - name: assert macOS links only system libraries
+        if: runner.os == 'macOS'
+        env:
+          PKG: ${{ matrix.pkg }}
+        run: |
+          set -euo pipefail
+          otool -L "npm/$PKG/bin/lpad" | sed 's/^/   /'
+          STRAY="$(otool -L "npm/$PKG/bin/lpad" | tail -n +2 | awk '{print $1}' \
+                   | grep -v '^/usr/lib/' | grep -v '^/System/' || true)"
+          if [ -n "$STRAY" ]; then
+            echo "!! links libraries that will not exist on a user's Mac:" >&2
+            printf '   %s\n' $STRAY >&2
+            exit 1
+          fi
+          # Apple silicon refuses to exec an unsigned binary at all; the linker
+          # ad-hoc signs by default, which is enough for a binary npm unpacks
+          # (npm-installed files carry no com.apple.quarantine attribute, so
+          # Gatekeeper is not in the path). There is no Developer ID signature and
+          # no notarisation here - a user who downloads the tarball through a
+          # browser instead would see a Gatekeeper prompt.
+          codesign -dv "npm/$PKG/bin/lpad" 2>&1 | sed 's/^/   /' || true
+      # Stamp the version onto the package that is about to be packed, and confirm
+      # it is the same version the gate approved. The script is deterministic - it
+      # reads the same cli/Cargo.toml from the same commit - so this can only fire
+      # if the script itself changed behaviour between the two jobs, which is worth
+      # one line to rule out.
+      - name: stamp the version
+        env:
+          EXPECTED: ${{ needs.prepare.outputs.version }}
+          PKG: ${{ matrix.pkg }}
+        run: |
+          set -euo pipefail
+          bash npm/scripts/prepare-packages.sh
+          GOT="$(node -p "require('./npm/$PKG/package.json').version")"
+          [ "$GOT" = "$EXPECTED" ] || {
+            echo "!! $PKG was stamped $GOT but the release is $EXPECTED" >&2; exit 1; }
+          echo ">> $PKG @ $GOT"
+      - name: pack ${{ matrix.pkg }}
+        env:
+          PKG: ${{ matrix.pkg }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tgz"
+          npm pack --pack-destination "$RUNNER_TEMP/tgz" "./npm/$PKG"
+          # Listed to a file rather than piped straight into grep: `tar | grep -q`
+          # makes tar die of SIGPIPE the moment grep matches, and pipefail then
+          # reports that as a failed check. npm/smoke-test.sh hit exactly this.
+          tar tzf "$RUNNER_TEMP"/tgz/*"$PKG"*.tgz > "$RUNNER_TEMP/pack.list"
+          sed 's/^/   /' "$RUNNER_TEMP/pack.list"
+          # The package exists to ship one file. `files` allowlists and ignore
+          # rules interact in ways that quietly produce a hollow tarball - during
+          # development npm fell back to the package's .gitignore and excluded
+          # exactly the binary, which is why every platform package now carries an
+          # .npmignore. This asserts the outcome rather than the workaround.
+          grep -qx 'package/bin/lpad' "$RUNNER_TEMP/pack.list" || {
+            echo "!! the packed tarball contains no package/bin/lpad" >&2
+            echo "   Check npm/$PKG/.npmignore and the files allowlist." >&2
+            exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-wrapper
+          path: ${{ runner.temp }}/tgz
+      # The check that matters: install the tarballs the way a user would - offline,
+      # scripts off, into a throwaway prefix - and run the CLI through the launcher.
+      # Offline proves the design claim (no network at install time, so it works
+      # behind a proxy and in a sealed build); --ignore-scripts proves no postinstall
+      # is quietly doing the work. A binary that cannot start, a launcher that cannot
+      # find it, or a `lpad --version` that disagrees with the release version all
+      # fail here rather than in the first user's terminal.
+      #
+      # Only two tarballs are on this runner - its own and the wrapper - and that
+      # is not a gap: npm filters optionalDependencies by `os`/`cpu` before it
+      # tries to resolve them, so the other two are never looked for, offline or
+      # not. It is the same mechanism that makes a user's install pull one ~7 MB
+      # binary instead of three, which means this step exercises it rather than
+      # working around it.
+      - name: install the packed tarballs and run lpad --version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/verify"
+          npm install --global --prefix "$PREFIX" --offline --ignore-scripts \
+            --no-audit --no-fund "$RUNNER_TEMP"/tgz/*.tgz 2>&1 | sed 's/^/   /'
+          LPAD="$PREFIX/bin/lpad"
+          [ -x "$LPAD" ] || { echo "!! no launcher at $LPAD" >&2; ls -lR "$PREFIX" >&2; exit 1; }
+          OUT="$("$LPAD" --version)"
+          echo ">> $LPAD --version -> $OUT"
+          [ "$OUT" = "lpad $VERSION" ] || {
+            echo "!! expected 'lpad $VERSION'" >&2
+            echo "   The binary and the package version disagree, which means the tarball" >&2
+            echo "   was built from a different tree than the one this release stamped." >&2
+            exit 1; }
+          # A real command as well as --version: pure local pricing math, so it
+          # needs no wallet, no key and no sequencer, and it proves the binary's own
+          # code ran rather than just its argument parser.
+          "$LPAD" bc quote --vt 2000000 --vc 50000 --fee-bps 100 --in 1000 | sed 's/^/   /'
+      # Linux only, and it is the deepest check in the release: it hides the system
+      # libpcsclite with an overlay mount inside a user namespace (no root, nothing
+      # on the machine changes), shows the raw binary failing with "cannot open
+      # shared object file", shows the launcher still working, and uses LD_DEBUG to
+      # prove the library that loaded is the one inside the installed package. That
+      # bundled copy is the entire reason `npm i -g` works without
+      # `apt install libpcsclite1`, so it is worth proving rather than assuming.
+      #
+      # It also covers argv, exit codes and SIGINT/SIGTERM forwarding through the
+      # launcher. There is no macOS equivalent because the script's assembly and
+      # hiding steps are Linux-specific; the inline install-and-run check above is
+      # what both platforms share. The script skips the namespace part loudly where
+      # the kernel forbids it, so a runner without unprivileged overlayfs reports a
+      # SKIP instead of a false pass.
+      - name: full npm smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: bash npm/smoke-test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball-${{ matrix.pkg }}
+          path: ${{ runner.temp }}/tgz/*${{ matrix.pkg }}*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publish the platform packages, and ONLY them. The wrapper is a separate job
+  # that needs this one, because ordering is a correctness property here, not a
+  # preference: @paradoxcomputer/lpad pins its optionalDependencies to this exact
+  # version, so a wrapper published first leaves a window in which
+  # `npm i -g @paradoxcomputer/lpad` resolves nothing installable and every install
+  # in that window prints the launcher's "no prebuilt binary" error.
+  #
+  # `needs: build` with no per-platform conditions means all three tarballs exist
+  # or nothing is published. That is deliberate: npm's tolerance of an
+  # optionalDependency that 404s varies by version, and a release is not the place
+  # to find out which behaviour this user's npm has.
+  publish-platforms:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Read into an env var rather than referenced inline in the steps: this is
+      # the value whose absence must produce a clean no-op, and a shell test on an
+      # env var is something that can be read, logged and reasoned about. Actions
+      # masks it in the log either way.
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      # registry-url is what makes setup-node write an .npmrc that reads
+      # NODE_AUTH_TOKEN; without it `npm publish` has no idea it is authenticated.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-tarball-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/tgz
+      - name: publish the platform packages
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/tgz"
+          ls -l *.tgz | sed 's/^/   /'
+
+          # Two tests, three reasons to publish nothing, and each one says which.
+          # A fork
+          # has no NPM_TOKEN, so this is also what stops a fork from half-publishing
+          # a release it was never entitled to cut. There is deliberately no check
+          # on the repository name: a token that is absent is a fact, a repository
+          # name is a guess that goes stale the day the project moves.
+          MODE=publish
+          if [ "$PUBLISH" != "true" ]; then MODE=dry; REASON="this run is a dry run or is not on a version tag"; fi
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then MODE=dry; REASON="secrets.NPM_TOKEN is not set for this repository"; fi
+          if [ "$MODE" = dry ]; then
+            echo ">> NOT publishing: $REASON"
+            echo "   Validating each tarball with 'npm publish --dry-run' instead - it runs"
+            echo "   the same packing and metadata checks and sends nothing to the registry."
+          fi
+
+          # Order is fixed rather than glob order so the log reads the same every
+          # time; the wrapper is a different artifact and is not in this directory.
+          for pkg in lpad-linux-x64 lpad-darwin-arm64 lpad-darwin-x64; do
+            TGZ="$(ls -1 *"$pkg"-*.tgz)"
+            NAME="$(tar -xzOf "$TGZ" package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).name))')"
+            SPEC="$NAME@$VERSION"
+            if [ "$MODE" = dry ]; then
+              npm publish --dry-run --access public "$TGZ" 2>&1 | sed 's/^/   /'
+              continue
+            fi
+            # npm refuses to overwrite a published version, so this check does not
+            # add safety - it makes a re-run of a release that died half way
+            # through succeed instead of failing on the packages that already went
+            # out. Which is the only way to finish such a release without inventing
+            # a new version number.
+            if npm view "$SPEC" version >/dev/null 2>&1; then
+              echo ">> $SPEC is already on npm - skipping (re-run of a partial release)"
+              continue
+            fi
+            echo ">> publishing $SPEC"
+            # --access public: a scoped package defaults to restricted on its first
+            # publish, and a restricted package on a free account fails outright.
+            # (No --provenance: it needs id-token: write and a public repository,
+            # and turning it on should be a deliberate change, not a default that
+            # starts failing the day the repo's visibility changes.)
+            npm publish --access public "$TGZ"
+          done
+
+  # The wrapper - the only package a user installs by name - published last, once
+  # every optionalDependency it pins is resolvable. Separate job purely so that
+  # `needs` enforces that order; it would otherwise be three more lines in the job
+  # above, and a future edit could reorder them without noticing what it broke.
+  publish-wrapper:
+    needs: [prepare, publish-platforms]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      # The very tarball the three build jobs installed and ran, not a rebuild of
+      # it.
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-wrapper
+          path: ${{ runner.temp }}/tgz
+      - name: publish the wrapper
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/tgz"
+          TGZ="$(ls -1 *.tgz)"
+          NAME="$(tar -xzOf "$TGZ" package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).name))')"
+          SPEC="$NAME@$VERSION"
+
+          if [ "$PUBLISH" != "true" ] || [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo ">> NOT publishing $SPEC (dry run, non-tag ref, or no secrets.NPM_TOKEN)"
+            npm publish --dry-run --access public "$TGZ" 2>&1 | sed 's/^/   /'
+            exit 0
+          fi
+          if npm view "$SPEC" version >/dev/null 2>&1; then
+            echo ">> $SPEC is already on npm - nothing to do"
+            exit 0
+          fi
+          echo ">> publishing $SPEC"
+          npm publish --access public "$TGZ"
+          echo ">> released: npm i -g $NAME@$VERSION"

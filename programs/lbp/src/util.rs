@@ -59,19 +59,19 @@ pub fn assert_ata_recipient(
     assert_ne!(
         recipient.account,
         lee_core::account::Account::default(),
-        "{context}: recipient token holding must be initialized"
+        "{context}: recipient not initialized"
     );
     assert_eq!(
         recipient.account.program_owner,
         sender_ata.account.program_owner,
-        "{context}: recipient must be owned by the same token program as the sender ATA"
+        "{context}: recipient program mismatch"
     );
     let recipient_definition_id = match TokenHolding::try_from(&recipient.account.data) {
         Ok(TokenHolding::Fungible { definition_id, .. }) => definition_id,
-        _ => panic!("{context}: recipient must be a Fungible token holding"),
+        _ => panic!("{context}: recipient not Fungible"),
     };
     assert_eq!(
         recipient_definition_id, sender_definition_id,
-        "{context}: recipient and sender token definitions do not match"
+        "{context}: recipient def mismatch"
     );
 }

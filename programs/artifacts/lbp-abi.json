@@ -211,6 +211,36 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "BuyDisposable",
+      "fields": [
+        {
+          "name": "collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "min_tokens_out",
+          "type": "u128"
+        },
+        {
+          "name": "t_buy_ms",
+          "type": "u64"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "SweepTreasury",
+      "fields": [
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ]
     }
   ]
 }

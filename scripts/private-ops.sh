@@ -4,12 +4,18 @@
 #
 # Why this is separate from scripts/test-all-cli.sh: every operation here mints a
 # real recursive STARK, and under LEZ v0.2.4 that is brutally expensive. The
-# privacy circuit pads its note set to `MAX_PRIVATE_ACCOUNTS = 7`
-# (lez/wallet/src/account_manager.rs: `dummy_inputs_default()` -> 7 dummy inputs
-# minus the real ones) with NO opt-out, because a variable note count would leak
-# how many private inputs a transaction really has. So a one-note shield proves
-# the same seven slots as a full one - the cost is flat and structural, not
-# proportional to what you are moving.
+# cost is flat: the WALLET (not the circuit) pads every privacy transaction to
+# `MAX_PRIVATE_ACCOUNTS = 7` via `dummy_inputs_default()`
+# (lez/wallet/src/account_manager.rs) - the circuit takes a `Vec<DummyInput>` and
+# accepts any count. Upstream's stated reason is that 7 is the largest per-tx
+# account count currently supported ("it is 7 for AMM") and that all users share
+# the value for a larger anonymity set.
+#
+# Do NOT reach for the padding when this feels slow: each dummy is one nullifier
+# hash plus one commitment hash, roughly a dozen hashes against four recursive
+# STARKs. Removing it entirely saves ~1% of transaction size and nothing
+# measurable in time. The cost is the recursion, and most of a saga's WALL CLOCK
+# is our own poll budget, not proving at all.
 #
 # Consequences you must plan around:
 #   * One prover is ~8-9 GB resident and saturates every core it can get. Two

@@ -29,7 +29,26 @@ ignore = [
     "RUSTSEC-2025-0055",
 
     # --- unmaintained / unsound ---------------------------------------------
-    "RUSTSEC-2026-0002", # lru unsoundness - transitive via the logos-blockchain stack
+    # lru 0.12.5 carries two distinct unsoundness advisories, and neither
+    # supersedes the other: -0002 is `IterMut` violating Stacked Borrows (patched
+    # in 0.16.3), -0253 a use-after-free when a key's `Drop` panics inside `pop()`
+    # (patched in 0.18.2). Both still stand against 0.12.5, so both ids are kept.
+    #
+    # Neither can be fixed from a lockfile. `lru` has exactly one dependent here,
+    # libp2p-swarm 0.46.0, which declares `lru = "0.12.3"`; the caret ceiling is
+    # 0.12.x, so both patched releases are semver-incompatible and
+    # `cargo update -p lru` moves nothing. libp2p-swarm is itself held at 0.46.0 by
+    # libp2p 0.55.0, required by the git-pinned logos-blockchain (rev e2a1c3b7), so
+    # escaping 0.12.5 means moving the LEZ pin rather than editing a lockfile.
+    #
+    # Neither precondition is reachable here. lpad's own sources never mention
+    # libp2p; it is transitive behind the LEZ `wallet` and `common` crates, and the
+    # CLI reaches the sequencer over HTTP RPC rather than by running a swarm. The
+    # one LruCache in libp2p-swarm, `PeerAddresses`, never calls `iter_mut`, so
+    # -0002 is not exercised; its PeerId/Multiaddr keys are plain data with no
+    # panicking `Drop`, so -0253 cannot be triggered either.
+    "RUSTSEC-2026-0002",
+    "RUSTSEC-2026-0253",
     "RUSTSEC-2025-0141", # bincode 1.3.3 unmaintained - transitive
     "RUSTSEC-2024-0388", # derivative unmaintained - transitive (arkworks / logos-blockchain)
     "RUSTSEC-2024-0436", # paste unmaintained - transitive

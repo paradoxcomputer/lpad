@@ -1,0 +1,5 @@
+# The binary is filled in by the release job (or, locally, by
+# npm/scripts/assemble-linux-x64.sh) - see this package's README.
+bin/lpad
+lib/*.so
+lib/*.so.*

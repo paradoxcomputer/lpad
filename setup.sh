@@ -13,6 +13,12 @@
 # and link the wallet (libpcsclite, via keycard support, which is a non-optional
 # dependency). It also reports whether the LEZ checkout that only
 # scripts/bootstrap.sh needs is present.
+#
+# Only what blocks a build fails: a missing cargo or libpcsclite, or a cached
+# pcsc link path that would break every relink. Docker and cargo-risczero are
+# warnings, because the guest ELFs they would produce are committed under
+# programs/artifacts/lpad/ - a machine without either still builds, installs and
+# runs everything except a guest rebuild.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -20,8 +26,12 @@ export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 . "$HOME/.cargo/env" 2>/dev/null || true
 
 fail=0
+warned=0
 note() { printf '  %s\n' "$1"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$1"; }
+# A warning is a real gap that costs you something specific and nothing else;
+# it must say what. Only `bad` sets the exit status.
+warn() { printf '\033[33m!\033[0m %s\n' "$1"; warned=1; }
 bad()  { printf '\033[31m✗\033[0m %s\n' "$1"; fail=1; }
 
 # --- 1. A stale _lez symlink from before the upgrade is now dead weight. -------
@@ -39,17 +49,25 @@ fi
 
 # --- 3. Guest cross-compilation ----------------------------------------------
 # Guests are built inside a pinned container so their image ids - which ARE the
-# on-chain program ids - are byte-identical on every machine.
+# on-chain program ids - are byte-identical on every machine. Both tools are
+# needed by exactly two callers: scripts/build-guests.sh, and scripts/ci-e2e.sh
+# when run with LPAD_VERIFY_GUESTS=1 (which is that same rebuild, compared
+# against the committed bytes). Neither is on the path from `git clone` to a
+# working CLI, so neither fails this script.
 if command -v cargo-risczero >/dev/null 2>&1; then
     ok "cargo-risczero present ($(cargo risczero --version 2>/dev/null || echo '?'))"
 else
-    bad "cargo-risczero not found - needed to build the zkVM guests"
+    warn "cargo-risczero not found - you cannot rebuild the zkVM guests"
+    note "needed by scripts/build-guests.sh and by LPAD_VERIFY_GUESTS=1; without"
+    note "it the committed ELFs are what the host crates embed, which is what"
+    note "every deployed sale was created against anyway"
     note "cargo install cargo-risczero --version 3.0.5"
 fi
 if docker info >/dev/null 2>&1; then
     ok "docker running (reproducible guest builds available)"
 else
-    bad "docker not available - the reproducible guest build needs it"
+    warn "docker not available - the reproducible guest build needs it"
+    note "same two callers: scripts/build-guests.sh and LPAD_VERIFY_GUESTS=1"
     note "you can still build the host crates; committed artifacts under"
     note "programs/artifacts/lpad/ are used as-is unless you change guest code"
 fi
@@ -70,7 +88,10 @@ else
     # hatch, so a one-file symlink farm is enough and needs no root.
     # No early `exit` in awk: it would close the pipe, SIGPIPE ldconfig, and
     # `set -o pipefail` would abort the whole script (exit 141).
-    RUNTIME=$(ldconfig -p 2>/dev/null | awk '/libpcsclite\.so\.1 /{ if (!seen++) print $NF }')
+    # `|| true`: on a distro with no ldconfig at all the pipeline fails, and under
+    # `set -o pipefail` that would abort the script with a bare exit 1 instead of
+    # reaching the diagnosis below.
+    RUNTIME=$(ldconfig -p 2>/dev/null | awk '/libpcsclite\.so\.1 /{ if (!seen++) print $NF }' || true)
     if [ -n "$RUNTIME" ] && [ -e "$RUNTIME" ]; then
         mkdir -p "$SHIM" && ln -sfn "$RUNTIME" "$SHIM/libpcsclite.so"
         ok "created a libpcsclite shim at $SHIM (-> $RUNTIME)"
@@ -139,3 +160,9 @@ Setup complete. Next:
   4. bash $REPO/scripts/install-cli.sh                # install lpad on PATH
   5. lpad status                                      # smoke test (against the Logos testnet)
 EOF
+
+if [ "$warned" -ne 0 ]; then
+    echo
+    echo "The ! items above cost you step 2 and nothing else - every other step,"
+    echo "including deploying and running against a live chain, works without them."
+fi

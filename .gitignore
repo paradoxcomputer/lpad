@@ -13,15 +13,24 @@ _lez
 .claude/
 **/.claude/
 
+# Devin skills (OpenSpec workflow tools)
+!.devin/
+!.devin/skills/
+
 # ── Internal design docs + RFP sources + grant proposal ────────────
 # Kept local; not part of the published code repo. The committed CLI reference
 # lives at cli/README.md instead. Drop these lines if you want docs in-repo.
 # `docs/*` rather than `docs/`: git does not descend into an excluded directory,
 # so a negation below could not re-include anything.
 docs/*
-# The LEZ upgrade notes are the exception - they document a breaking version bump
-# that anyone building or redeploying this repo needs, and README links to them.
-!docs/UPGRADE-v0.2.4.md
+# The privacy document is the one exception, and it is not a preference: both
+# RFPs require it by name as a deliverable - "Provide a privacy and anonymisation
+# properties document covering: what on-chain state and transaction data is
+# visible to observers; what data is protected when the private account path is
+# used; trust assumptions ...; and what happens if a user bypasses the expected
+# interaction path" (requirements1.md:359, requirements2.md:330). Ignoring it
+# would leave that requirement with no artefact behind it in the public repo.
+!docs/PRIVACY.md
 requirements1.md
 requirements2.md
 proposal.md

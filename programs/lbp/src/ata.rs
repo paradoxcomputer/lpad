@@ -45,7 +45,7 @@ pub fn buy_ata(
     clock_ts: i64,
     clock_block_id: u64,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    let state = PoolState::try_from(&pool.account.data).expect("invalid pool state account");
+    let state = PoolState::try_from(&pool.account.data).expect("bad pool state");
     check_accounts(&state, &pool, &token_vault, &collateral_vault, self_program_id);
     // SECURITY: the ATA program is submitter-chosen, so it must match the one
     // pinned at creation. A substitute (e.g. no-op) program would skip the real
@@ -53,19 +53,19 @@ pub fn buy_ata(
     // the pool. LBP has no fee leg, so nothing else cross-checks the deposit.
     assert_eq!(
         ata_program_id, state.ata_program_id,
-        "ata_program_id does not match the program pinned at pool creation"
+        "ata_program_id != the pinned id"
     );
     // SECURITY: a gated pool may only be bought via BuyGated (see `buy::buy`).
     assert!(
         is_open_allowlist(&state.allowlist_root),
-        "this pool is allowlist-gated; use BuyGated with an inclusion proof"
+        "pool is allowlist-gated; use BuyGated"
     );
 
-    assert!(owner.is_authorized, "buyer (ATA owner) must authorize the buy");
-    let (collateral_def, _) = read_fungible(&buyer_collateral_ata, "BuyAta: buyer collateral ATA");
+    assert!(owner.is_authorized, "buyer must authorize");
+    let (collateral_def, _) = read_fungible(&buyer_collateral_ata, "buyer ATA");
     assert_eq!(
         collateral_def, state.collateral_definition_id,
-        "buyer collateral ATA token does not match the pool's collateral definition"
+        "buyer ATA: wrong definition"
     );
     // The recipient of leg 1. The canonical upstream ATA program does not police
     // its recipient (it auto-creates a default one), so this is the only place the
@@ -74,11 +74,11 @@ pub fn buy_ata(
         &collateral_vault,
         &buyer_collateral_ata,
         collateral_def,
-        "BuyAta collateral vault",
+        "collateral vault",
     );
 
     let t_ms = u64::try_from(clock_ts.max(0)).expect("clock must be non-negative");
-    let outcome = apply_buy(state, collateral_in, min_tokens_out, t_ms, clock_block_id, true);
+    let outcome = apply_buy(state, collateral_in, min_tokens_out, t_ms, clock_block_id, true, true);
     let pool_id = pool.account_id;
 
     let mut owner_auth = owner.clone();

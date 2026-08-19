@@ -1,0 +1,43 @@
+{
+  "name": "@paradoxcomputer/lpad",
+  "version": "0.2.0",
+  "description": "lpad - bonding-curve + LBP token launchpad CLI for the Logos Execution Zone",
+  "keywords": [
+    "lpad",
+    "logos",
+    "lez",
+    "launchpad",
+    "bonding-curve",
+    "lbp",
+    "cli"
+  ],
+  "homepage": "https://github.com/paradoxcomputer/lpad#readme",
+  "bugs": {
+    "url": "https://github.com/paradoxcomputer/lpad/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paradoxcomputer/lpad.git",
+    "directory": "npm/lpad"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Paradox Computer",
+  "bin": {
+    "lpad": "bin/lpad.js"
+  },
+  "files": [
+    "bin/lpad.js",
+    "README.md",
+    "LICENSE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "optionalDependencies": {
+    "@paradoxcomputer/lpad-linux-x64": "0.2.0",
+    "@paradoxcomputer/lpad-darwin-arm64": "0.2.0",
+    "@paradoxcomputer/lpad-darwin-x64": "0.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

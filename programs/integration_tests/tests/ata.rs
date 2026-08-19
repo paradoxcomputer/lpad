@@ -125,6 +125,9 @@ fn open_sale(i: &Ids, real_collateral: u128) -> SaleState {
         dex_seed_reserve: R,
         sale_reserve: D,
         real_collateral,
+        // The ATA paths are public buys/sells, which sweep their fee to the
+        // treasury in the same transaction, so nothing is ever owed here.
+        treasury_owed: 0,
         status: SaleStatus::Open,
         cum_collateral_in: 0,
         cum_fees: 0,

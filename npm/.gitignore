@@ -1,0 +1,10 @@
+# Assembled package contents. The binaries (and the bundled libpcsclite) are
+# build outputs: the release job drops them into each platform package right
+# before `npm publish`, and npm/scripts/assemble-linux-x64.sh does the same
+# thing locally for testing. Nothing here is source, so none of it is committed.
+lpad-*/bin/lpad
+lpad-*/lib/*.so
+lpad-*/lib/*.so.*
+
+# `npm pack` output from a local test run.
+*.tgz

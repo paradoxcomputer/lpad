@@ -1,0 +1,3 @@
+# Nothing to exclude: `files` in package.json is the allowlist.
+# This file exists so npm never falls back to .gitignore (which excludes *.tgz
+# and, in the platform packages, the binary itself) when deciding what to pack.

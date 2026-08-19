@@ -66,7 +66,7 @@ pub fn mul_shr_64_checked(a: u128, b: u128) -> Option<u128> {
 /// would corrupt the price and let a buyer drain the vault.
 #[must_use]
 pub fn div_to_q64(a: u128, b: u128) -> u128 {
-    assert!(a < (1u128 << 64), "div_to_q64: numerator out of the 64-bit Q64.64 domain");
+    assert!(a < (1u128 << 64), "div_to_q64: numerator too large");
     assert!(b != 0, "div_to_q64 by zero");
     (a << 64) / b
 }
@@ -76,7 +76,7 @@ pub fn div_to_q64(a: u128, b: u128) -> u128 {
 #[must_use]
 pub fn div_q64(a: u128, b: u128) -> u128 {
     assert!(b != 0, "div_q64 by zero");
-    assert!(a < (1u128 << 64), "div_q64: numerator out of the 64-bit Q64.64 domain");
+    assert!(a < (1u128 << 64), "div_q64: numerator too large");
     (a << 64) / b
 }
 
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of the 64-bit Q64.64 domain")]
+    #[should_panic(expected = "numerator too large")]
     fn div_to_q64_reverts_above_domain() {
         // A numerator >= 2^64 would overflow `a << 64` and silently wrap in a
         // release guest (overflow-checks off), corrupting the Balancer price and

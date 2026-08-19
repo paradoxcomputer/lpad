@@ -11,6 +11,7 @@
 //! `lbp_core::Instruction`.
 
 use lbp_core::Instruction;
+use lbp_program::buy::disposable_window;
 use lbp_program::dispatch::{clock_block_id, clock_ms, echo_clock};
 use lee_core::program::{ProgramInput, ProgramOutput, read_lee_inputs};
 
@@ -27,9 +28,13 @@ fn main() {
 
     let pre_states_clone = pre_states.clone();
 
-    // Every instruction carries a `deadline`; the timestamp validity window is
-    // applied once, after the match.
-    let (post_states, chained_calls, deadline) = match instruction {
+    // Every instruction carries a `deadline`, which becomes the window's exclusive
+    // upper bound; the window is applied once, after the match. Arms also return a
+    // LOWER bound as `Option<u64>`, which only `BuyDisposable` uses: it is priced
+    // at a caller-supplied timestamp with no clock account to check it against, so
+    // the window is the only thing tying that timestamp to real time. Every other
+    // arm returns `None` and is bounded from above exactly as before.
+    let (post_states, chained_calls, valid_from, valid_until) = match instruction {
         Instruction::CreateSale {
             collateral_definition_id,
             treasury_id,
@@ -54,21 +59,29 @@ fn main() {
                 pool,
                 token_vault,
                 collateral_vault,
+                token_definition,
+                collateral_definition,
                 creator_token_holding,
                 creator_collateral_holding,
                 creator,
+                treasury,
+                creator_index,
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("CreateSale requires exactly seven accounts");
+                .expect("CreateSale: 11 accounts");
             let clock_ts = clock_ms(&clock);
             let (post_states, chained_calls) = lbp_program::create_sale::create_sale(
                 pool,
                 token_vault,
                 collateral_vault,
+                token_definition,
+                collateral_definition,
                 creator_token_holding,
                 creator_collateral_holding,
                 creator,
+                treasury,
+                creator_index,
                 collateral_definition_id,
                 treasury_id,
                 token_name,
@@ -89,7 +102,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::Buy {
@@ -106,7 +124,7 @@ fn main() {
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("Buy requires exactly six accounts");
+                .expect("Buy: 6 accounts");
             let clock_ts = clock_ms(&clock);
             let block_id = clock_block_id(&clock);
             let (post_states, chained_calls) = lbp_program::buy::buy(
@@ -121,7 +139,12 @@ fn main() {
                 clock_ts,
                 block_id,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::BuyGated {
@@ -140,7 +163,7 @@ fn main() {
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("BuyGated requires exactly six accounts");
+                .expect("BuyGated: 6 accounts");
             let clock_ts = clock_ms(&clock);
             let block_id = clock_block_id(&clock);
             let (post_states, chained_calls) = lbp_program::buy::buy_gated(
@@ -157,7 +180,12 @@ fn main() {
                 clock_ts,
                 block_id,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::BuyAta {
@@ -176,7 +204,7 @@ fn main() {
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("BuyAta requires exactly seven accounts");
+                .expect("BuyAta: 7 accounts");
             let clock_ts = clock_ms(&clock);
             let block_id = clock_block_id(&clock);
             let (post_states, chained_calls) = lbp_program::ata::buy_ata(
@@ -193,17 +221,30 @@ fn main() {
                 clock_ts,
                 block_id,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
+        // `weight_obs` is the per-pool PDA the advanced weight is written into;
+        // the pool account itself is echoed unchanged so a poke cannot invalidate
+        // an in-flight BuyDisposable (see `lifecycle::poke`).
         Instruction::Poke { deadline } => {
-            let [pool, clock] = pre_states
+            let [pool, weight_obs, clock] = pre_states
                 .try_into()
-                .expect("Poke requires exactly two accounts");
+                .expect("Poke: 3 accounts");
             let clock_ts = clock_ms(&clock);
             let (post_states, chained_calls) =
-                lbp_program::lifecycle::poke(pool, self_program_id, clock_ts);
-            (echo_clock(post_states, clock), chained_calls, deadline)
+                lbp_program::lifecycle::poke(pool, weight_obs, self_program_id, clock_ts);
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         // Pause/Resume take no clock: weight progression is lazy and continues
@@ -211,66 +252,136 @@ fn main() {
         Instruction::Pause { deadline } => {
             let [pool, creator] = pre_states
                 .try_into()
-                .expect("Pause requires exactly two accounts");
+                .expect("Pause: 2 accounts");
             let (post_states, chained_calls) =
                 lbp_program::lifecycle::set_paused(pool, creator, true, self_program_id);
-            (post_states, chained_calls, deadline)
+            (post_states, chained_calls, None, deadline)
         }
 
         Instruction::Resume { deadline } => {
             let [pool, creator] = pre_states
                 .try_into()
-                .expect("Resume requires exactly two accounts");
+                .expect("Resume: 2 accounts");
             let (post_states, chained_calls) =
                 lbp_program::lifecycle::set_paused(pool, creator, false, self_program_id);
-            (post_states, chained_calls, deadline)
+            (post_states, chained_calls, None, deadline)
         }
 
         Instruction::CloseSale { deadline } => {
             let [pool, creator, clock] = pre_states
                 .try_into()
-                .expect("CloseSale requires exactly three accounts");
+                .expect("CloseSale: 3 accounts");
             let clock_ts = clock_ms(&clock);
             let (post_states, chained_calls) =
                 lbp_program::lifecycle::close_sale(pool, creator, self_program_id, clock_ts);
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
-        // No clock: withdraw is gated on the pool already being closed.
+        // No clock account: withdraw is gated on the pool already being closed,
+        // not on a timestamp, so there is nothing to echo. No treasury account
+        // either - the escrowed at-close fee is settled by SweepTreasury, see
+        // `lifecycle::withdraw`.
         Instruction::Withdraw { deadline } => {
             let [
                 pool,
                 token_vault,
                 collateral_vault,
-                treasury,
                 creator_collateral_holding,
                 creator_token_holding,
                 creator,
             ] = pre_states
                 .try_into()
-                .expect("Withdraw requires exactly seven accounts");
+                .expect("Withdraw: 6 accounts");
             let (post_states, chained_calls) = lbp_program::lifecycle::withdraw(
                 pool,
                 token_vault,
                 collateral_vault,
-                treasury,
                 creator_collateral_holding,
                 creator_token_holding,
                 creator,
                 self_program_id,
             );
-            (post_states, chained_calls, deadline)
+            (post_states, chained_calls, None, deadline)
+        }
+
+        // No clock account: a privacy transaction cannot carry one (see the
+        // `lbp_program::buy` module doc). The price is taken at `t_buy_ms` and
+        // the validity window below is what binds it to real time.
+        Instruction::BuyDisposable {
+            collateral_in,
+            min_tokens_out,
+            t_buy_ms,
+            deadline,
+        } => {
+            let [
+                pool,
+                token_vault,
+                collateral_vault,
+                buyer_collateral_holding,
+                buyer_token_holding,
+            ] = pre_states
+                .try_into()
+                .expect("BuyDisposable: 5 accounts");
+            let (post_states, chained_calls, t_end_ms) = lbp_program::buy::buy_disposable(
+                pool,
+                token_vault,
+                collateral_vault,
+                buyer_collateral_holding,
+                buyer_token_holding,
+                collateral_in,
+                min_tokens_out,
+                t_buy_ms,
+                self_program_id,
+            );
+            // `t_end_ms` comes from the PINNED pool state, not from the caller.
+            // `disposable_window` clamps the caller's deadline down to the
+            // earliest of it, the one-hour staleness cap, and the sale's end, and
+            // reverts if nothing is left - never echo the deadline unclamped.
+            let window = disposable_window(deadline, t_buy_ms, t_end_ms);
+            (post_states, chained_calls, Some(window.start), window.end)
+        }
+
+        // No clock and no signer: the sweep is permissionless and time-invariant
+        // (see `lifecycle::sweep_treasury`), so the only bound it carries is the
+        // submitter's own deadline.
+        Instruction::SweepTreasury { deadline } => {
+            let [pool, collateral_vault, treasury] = pre_states
+                .try_into()
+                .expect("SweepTreasury: 3 accounts");
+            let (post_states, chained_calls) = lbp_program::lifecycle::sweep_treasury(
+                pool,
+                collateral_vault,
+                treasury,
+                self_program_id,
+            );
+            (post_states, chained_calls, None, deadline)
         }
     };
 
-    ProgramOutput::new(
+    let output = ProgramOutput::new(
         self_program_id,
         caller_program_id,
         instruction_words,
         pre_states_clone,
         post_states,
     )
-    .with_chained_calls(chained_calls)
-    .with_timestamp_validity_window(..deadline)
-    .write();
+    .with_chained_calls(chained_calls);
+
+    // `..to` is infallible; `from..to` is not (LEZ has no `RangeInclusive`
+    // conversion, and rejects an empty `from >= to` range), so the bounded form
+    // goes through the fallible setter. `disposable_window` has already asserted
+    // the range is non-empty, so this expect is unreachable - it is here because
+    // the alternative is an unwrap with no story for the operator.
+    let output = match valid_from {
+        None => output.with_timestamp_validity_window(..valid_until),
+        Some(from) => output
+            .try_with_timestamp_validity_window(from..valid_until)
+            .expect("empty validity window"),
+    };
+    output.write();
 }

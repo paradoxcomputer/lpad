@@ -12,7 +12,7 @@
 //! order the SDK builds its account list in, and the doc comments on
 //! `bonding_curve_core::Instruction`.
 
-use bonding_curve_core::Instruction;
+use bonding_curve_core::{Instruction, SaleState, private_window_hi};
 use bonding_curve_program::dispatch::{clock_ms, echo_clock};
 use lee_core::program::{ProgramInput, ProgramOutput, read_lee_inputs};
 
@@ -29,9 +29,14 @@ fn main() {
 
     let pre_states_clone = pre_states.clone();
 
-    // Every instruction carries a `deadline`; the timestamp validity window is
-    // applied once, after the match.
-    let (post_states, chained_calls, deadline) = match instruction {
+    // Every instruction carries a `deadline` - the exclusive upper bound of the
+    // timestamp validity window, applied once after the match. Only the
+    // disposable buy also needs a LOWER bound (it carries no clock, so the window
+    // is the only thing that can pin it in time), so each arm yields
+    // `(post_states, chained_calls, window_lo, window_hi)`. Every public arm
+    // yields `None` for the lower bound, which is exactly the unbounded-below
+    // `..deadline` they carried before.
+    let (post_states, chained_calls, window_lo, window_hi) = match instruction {
         Instruction::CreateSale {
             collateral_definition_id,
             treasury_id,
@@ -53,21 +58,27 @@ fn main() {
                 sale,
                 token_vault,
                 collateral_vault,
+                treasury,
+                token_definition,
                 collateral_definition,
                 creator_token_holding,
                 creator,
+                creator_index,
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("CreateSale requires exactly seven accounts");
+                .expect("CreateSale requires exactly ten accounts");
             let clock_ts = clock_ms(&clock);
             let (post_states, chained_calls) = bonding_curve_program::create_sale::create_sale(
                 sale,
                 token_vault,
                 collateral_vault,
+                treasury,
+                token_definition,
                 collateral_definition,
                 creator_token_holding,
                 creator,
+                creator_index,
                 collateral_definition_id,
                 treasury_id,
                 token_name,
@@ -85,7 +96,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::Buy {
@@ -117,7 +133,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::BuyAta {
@@ -153,7 +174,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::Sell {
@@ -185,7 +211,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::SellAta {
@@ -221,7 +252,12 @@ fn main() {
                 self_program_id,
                 clock_ts,
             );
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         Instruction::CloseSale { deadline } => {
@@ -229,13 +265,24 @@ fn main() {
                 .try_into()
                 .expect("CloseSale requires exactly three accounts");
             let clock_ts = clock_ms(&clock);
-            let (post_states, chained_calls) =
-                bonding_curve_program::lifecycle::close_sale(sale, creator, self_program_id, clock_ts);
-            (echo_clock(post_states, clock), chained_calls, deadline)
+            let (post_states, chained_calls) = bonding_curve_program::lifecycle::close_sale(
+                sale,
+                creator,
+                self_program_id,
+                clock_ts,
+            );
+            (
+                echo_clock(post_states, clock),
+                chained_calls,
+                None,
+                deadline,
+            )
         }
 
         // No clock account: withdraw is gated on the sale already being closed,
-        // not on a timestamp, so there is nothing to echo.
+        // not on a timestamp, so there is nothing to echo. No treasury account
+        // either - the escrowed disposable-buy fee is settled by SweepTreasury,
+        // see `lifecycle::withdraw`.
         Instruction::Withdraw { deadline } => {
             let [
                 sale,
@@ -256,18 +303,95 @@ fn main() {
                 creator,
                 self_program_id,
             );
-            (post_states, chained_calls, deadline)
+            (post_states, chained_calls, None, deadline)
+        }
+
+        Instruction::BuyDisposable {
+            collateral_in,
+            min_tokens_out,
+            not_before_ms,
+            deadline,
+        } => {
+            let [
+                sale,
+                token_vault,
+                collateral_vault,
+                buyer_collateral_holding,
+                buyer_token_holding,
+            ] = pre_states
+                .try_into()
+                .expect("BuyDisposable requires exactly five accounts");
+            // The sale's end timestamp comes from the PINNED pre-state, never
+            // from the instruction: the submitter chooses the instruction bytes,
+            // so reading it there would let a buyer widen their own window past
+            // the end of the sale.
+            let state =
+                SaleState::try_from(&sale.account.data).expect("invalid sale state account");
+            let end_or_max = if state.end_timestamp_ms == 0 {
+                u64::MAX
+            } else {
+                state.end_timestamp_ms
+            };
+            let hi = private_window_hi(deadline, not_before_ms, end_or_max);
+            assert!(
+                not_before_ms < hi,
+                "BuyDisposable: empty timestamp validity window - not_before_ms is at or past \
+                 the tightest upper bound (the deadline, not_before_ms + MAX_PRIVATE_WINDOW_MS, \
+                 or the sale's end_timestamp_ms). Re-submit with a later deadline, an earlier \
+                 not_before_ms, or - if the sale has ended - not at all."
+            );
+            let (post_states, chained_calls) = bonding_curve_program::buy::buy_disposable(
+                sale,
+                token_vault,
+                collateral_vault,
+                buyer_collateral_holding,
+                buyer_token_holding,
+                collateral_in,
+                min_tokens_out,
+                self_program_id,
+            );
+            // No clock to echo: a privacy transaction pins every public account
+            // byte-for-byte at proving time, and the clock's data is rewritten
+            // every block. `hi` is what enforces `end_timestamp_ms` instead.
+            (post_states, chained_calls, Some(not_before_ms), hi)
+        }
+
+        // No clock and no signer: the sweep is permissionless and time-invariant
+        // (see `lifecycle::sweep_treasury`), so the only bound it carries is the
+        // submitter's own deadline.
+        Instruction::SweepTreasury { deadline } => {
+            let [sale, collateral_vault, treasury] = pre_states
+                .try_into()
+                .expect("SweepTreasury requires exactly three accounts");
+            let (post_states, chained_calls) = bonding_curve_program::lifecycle::sweep_treasury(
+                sale,
+                collateral_vault,
+                treasury,
+                self_program_id,
+            );
+            (post_states, chained_calls, None, deadline)
         }
     };
 
-    ProgramOutput::new(
+    let output = ProgramOutput::new(
         self_program_id,
         caller_program_id,
         instruction_words,
         pre_states_clone,
         post_states,
     )
-    .with_chained_calls(chained_calls)
-    .with_timestamp_validity_window(..deadline)
-    .write();
+    .with_chained_calls(chained_calls);
+
+    // Half-open in both shapes: `..hi` when there is no lower bound (admitted iff
+    // `ts < hi`), `lo..hi` when there is (`ts >= lo && ts < hi`). The two-bound
+    // form is fallible only because an empty range is rejected, and the
+    // BuyDisposable arm has already asserted `lo < hi` - so this expect is
+    // unreachable short of a bug in that arm's bound arithmetic.
+    let output = match window_lo {
+        None => output.with_timestamp_validity_window(..window_hi),
+        Some(lo) => output
+            .try_with_timestamp_validity_window(lo..window_hi)
+            .expect("empty timestamp validity window: window_lo is at or past window_hi"),
+    };
+    output.write();
 }
