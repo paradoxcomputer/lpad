@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "bonding_curve_core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "borsh",
  "lee_core",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "bonding_curve_program"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "associated_token_account_core",
  "bonding_curve_core",
@@ -2594,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "integration_tests"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "associated_token_account_core",
  "authenticated_transfer_core",
@@ -2799,7 +2799,7 @@ dependencies = [
 
 [[package]]
 name = "lbp_core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "borsh",
  "lee_core",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "lbp_program"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "associated_token_account_core",
  "borsh",
@@ -4063,7 +4063,7 @@ dependencies = [
 
 [[package]]
 name = "lpad_guests"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bonding_curve_core",
  "bonding_curve_program",
@@ -7586,7 +7586,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wlez_core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lee_core",
  "risc0-zkvm",
@@ -7595,7 +7595,7 @@ dependencies = [
 
 [[package]]
 name = "wlez_program"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "authenticated_transfer_core",
  "borsh",

@@ -11,6 +11,34 @@ timeout rather than an error.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-19
+
+Packaging and first-run fixes, all found by installing the published 0.3.0 from
+npm on a clean machine and following the README.
+
+### Fixed
+
+- **`lpad --json` emitted invalid JSON on a fresh wallet.** Opening a wallet that
+  has never recorded sequencer latencies prints `Statistics not found, choosing
+  empty` to STDOUT, ahead of the payload - so the FIRST `--json` command after
+  `lpad init-wallet` could not be parsed. That is the new-user path, and `--json`
+  is contracted to be the machine surface. `LaunchpadClient::create` already
+  gagged wallet chatter; `open` did not, which is every other command.
+- **The no-wallet error named a remedy npm users cannot run.** It said "run `bash
+  scripts/bootstrap.sh`" - a repo script absent from an `npm i -g` install, and
+  this is the first message such a user ever sees. It now names
+  `lpad init-wallet`, with the bootstrap script as the from-a-clone option.
+- **The README quickstart began with a command that fails on a clean machine.**
+  `lpad network` opens an existing wallet and cannot create one, so line 1 errored
+  out. The quickstart now starts with `lpad init-wallet`, which also records the
+  network so nothing downstream needs `--network`.
+
+### Added
+
+- `scripts/test-all-cli.sh` asserts that `--json` output actually parses. The bug
+  above only reproduces against a real wallet and sequencer, so that is the layer
+  that can catch it.
+
 ## [0.3.0] - 2026-08-19
 
 Not a patch: all three program ids move and four existing instructions change

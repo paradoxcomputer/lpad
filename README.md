@@ -45,7 +45,7 @@ glibc 2.34+ on Linux (Ubuntu 22.04+, Debian 12+).
 Then go from an empty wallet to a token you can trade, entirely through `lpad`:
 
 ```bash
-lpad network                                  # pick 1) Logos testnet
+lpad init-wallet                              # fresh keys; prints a recovery phrase ONCE
 lpad faucet                                   # 150 native LEZ (solves a small proof-of-work)
 lpad wrap --amount 100                        # native LEZ -> WLEZ, the collateral token
 lpad bc create-token-sale --name DEMO --symbol DMO --supply 1000000 \

@@ -1,6 +1,6 @@
 {
   "name": "@paradoxcomputer/lpad",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "lpad - bonding-curve + LBP token launchpad CLI for the Logos Execution Zone",
   "keywords": [
     "lpad",
@@ -33,9 +33,9 @@
     "LICENSE-APACHE"
   ],
   "optionalDependencies": {
-    "@paradoxcomputer/lpad-linux-x64": "0.3.0",
-    "@paradoxcomputer/lpad-darwin-arm64": "0.3.0",
-    "@paradoxcomputer/lpad-darwin-x64": "0.3.0"
+    "@paradoxcomputer/lpad-linux-x64": "0.3.1",
+    "@paradoxcomputer/lpad-darwin-arm64": "0.3.1",
+    "@paradoxcomputer/lpad-darwin-x64": "0.3.1"
   },
   "engines": {
     "node": ">=18"

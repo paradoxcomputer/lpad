@@ -135,9 +135,16 @@ impl WalletPaths {
             .parent()
             .map_or_else(|| PathBuf::from("statistics.json"), |d| d.join("statistics.json"));
         if !config.exists() {
+            // `lpad init-wallet` FIRST, and a repo script only as an aside. This
+            // used to name `scripts/bootstrap.sh` alone, which is unreachable
+            // advice for the audience most likely to hit it: someone who ran
+            // `npm i -g @paradoxcomputer/lpad` has no checkout to run a script
+            // from, and this is the very first message they see.
             return Err(format!(
-                "no wallet config at {} - run `bash scripts/bootstrap.sh` to create one, \
-                 or pass --config/--storage (or set $LEE_WALLET_HOME_DIR)",
+                "no wallet at {} - create one with `lpad init-wallet` (it prints a recovery \
+                 phrase once; keep it). From a clone, `bash scripts/bootstrap.sh` also \
+                 builds a funded demo environment. To point at an existing wallet instead, \
+                 pass --config/--storage or set $LEE_WALLET_HOME_DIR.",
                 config.display()
             ));
         }

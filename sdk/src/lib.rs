@@ -1746,8 +1746,17 @@ impl LaunchpadClient {
         // Async since v0.2.1: opening may calibrate the configured sequencers.
         // Taken BEFORE `config` is moved into the wallet.
         let home = config.parent().map(Path::to_path_buf);
+        // Opening a wallet prints. On a wallet that has never recorded sequencer
+        // latencies it writes "Statistics not found, choosing empty" to STDOUT,
+        // which lands in front of a `--json` payload and makes it unparseable -
+        // and it does that on the FIRST command after `init-wallet`, so the very
+        // first thing a scripted new user sees is invalid JSON. `create()` already
+        // gags for the same reason; `open()` did not, which is every other command.
         let wallet = rt
-            .block_on(WalletCore::new_update_chain(config, storage, statistics, overrides))
+            .block_on(async {
+                let _silence = gag::Gag::stdout().ok();
+                WalletCore::new_update_chain(config, storage, statistics, overrides).await
+            })
             .map_err(|e| format!("open wallet: {e}"))?;
         Ok(Self { wallet, rt, progress: None, home, unlinkable_launch_creator: None })
     }

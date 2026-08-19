@@ -178,6 +178,27 @@ chkps() { local n="$1"
 sale_id() { "$L" bc ids --program "$LPAD_BC_PROGRAM_ID" --token-def "$LPAD_PROJ_DEF" --collateral-def "$LPAD_COLL_DEF" --creator "$LPAD_CREATOR" --nonce "$1" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["sale"])'; }
 pool_id() { "$L" lbp ids --program "$LPAD_LBP_PROGRAM_ID" --token-def "$LPAD_PROJ_DEF" --collateral-def "$LPAD_COLL_DEF" --creator "$LPAD_CREATOR" --nonce "$1" --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["pool"])'; }
 
+# Every `--json` invocation must emit ONLY parseable JSON on stdout.
+#
+# It did not: opening a wallet that has never recorded sequencer latencies prints
+# "Statistics not found, choosing empty" to STDOUT, so the first `--json` command
+# after `lpad init-wallet` returned unparseable output. That is the new-user path,
+# and `--json` is contracted to be the machine surface - a caller piping it to
+# `python3 -m json.tool` got a syntax error rather than a payload. Checked here
+# because it only reproduces against a real wallet + sequencer.
+jsonchk() {
+  local n="$1"; shift
+  COVERED+=("$n")
+  local out
+  out=$("$@" 2>/dev/null)
+  if printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    echo "  ✓ $n (--json is parseable)"; PASS=$((PASS + 1))
+  else
+    echo "  ✗ $n (--json emitted non-JSON on stdout)"; FAIL=$((FAIL + 1)); FAILED+=("$n")
+    printf '%s' "$out" | head -3 | sed 's/^/        /'
+  fi
+}
+
 # `treasury_owed` straight off the chain: what the two sweep commands settle,
 # and the only way to tell "nothing to settle" - a legitimate skip, since both
 # guests REVERT when nothing is owed - apart from "settlement is broken", which
@@ -301,6 +322,7 @@ preflight_state_alive || exit 2
 
 echo "## ONLINE - reads"
 chk "status"         "$L" "${NET[@]}" status
+jsonchk "status --json" "$L" "${NET[@]}" --json status
 # `init-wallet` CREATES a wallet, so it cannot be aimed at this sweep's own: it
 # refuses to overwrite one, and were it to succeed it would replace the keys
 # every other check here depends on. A throwaway home is also the only honest

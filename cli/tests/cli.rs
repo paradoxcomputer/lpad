@@ -243,7 +243,16 @@ fn bc_buy_private_errors_without_wallet() {
         "--user-token", &h, "--in", "100", "--config", "/nonexistent/lpad/wallet_config.json",
     ]);
     assert!(!o.status.success());
-    assert!(se(&o).contains("no wallet config at"), "expected wallet-resolve error, got: {}", se(&o));
+    assert!(se(&o).contains("no wallet at"), "expected wallet-resolve error, got: {}", se(&o));
+    // The remedy must be reachable for the audience most likely to hit this: an
+    // `npm i -g @paradoxcomputer/lpad` user has no checkout, so pointing them at
+    // `scripts/bootstrap.sh` (as this message used to, exclusively) is advice they
+    // cannot act on. `lpad init-wallet` must be named.
+    assert!(
+        se(&o).contains("lpad init-wallet"),
+        "the no-wallet error must name `lpad init-wallet`, got: {}",
+        se(&o)
+    );
 }
 
 /// The second private mode parses the same flags as the first and reaches the
@@ -260,7 +269,7 @@ fn buy_disposable_errors_without_wallet_on_both_programs() {
         ]);
         assert!(!o.status.success(), "{group} buy-disposable unexpectedly succeeded");
         assert!(
-            se(&o).contains("no wallet config at"),
+            se(&o).contains("no wallet at"),
             "expected wallet-resolve error from {group} buy-disposable, got: {}",
             se(&o)
         );
@@ -363,7 +372,7 @@ fn sweep_treasury_needs_no_creator_and_errors_without_wallet_on_both_programs() 
         ]);
         assert!(!o.status.success(), "{group} sweep-treasury unexpectedly succeeded");
         assert!(
-            se(&o).contains("no wallet config at"),
+            se(&o).contains("no wallet at"),
             "expected wallet-resolve error from {group} sweep-treasury, got: {}",
             se(&o)
         );
@@ -467,7 +476,7 @@ fn status_without_wallet_errors_cleanly() {
     // errors regardless of any bootstrapped ~/.lpad.
     let o = lpad(&["status", "--config", "/nonexistent/lpad/wallet_config.json"]);
     assert!(!o.status.success());
-    assert!(se(&o).contains("no wallet config at"), "stderr: {}", se(&o));
+    assert!(se(&o).contains("no wallet at"), "stderr: {}", se(&o));
 }
 
 #[test]
@@ -560,10 +569,10 @@ fn a_normal_command_without_a_tty_does_not_prompt() {
     assert!(!o.status.success(), "the closed-port sequencer should have failed the command");
     assert!(!se(&o).contains(MENU) && !so(&o).contains(MENU), "the picker ran: {}", se(&o));
     assert!(!w.marker().exists(), "no choice was made, so none may be stored");
-    // And with no wallet at all the answer is still the bootstrap message, not a
+    // And with no wallet at all the answer is still the create-a-wallet message, not a
     // question the user cannot act on yet.
     let o = lpad(&["status", "--config", "/nonexistent/lpad/wallet_config.json"]);
-    assert!(se(&o).contains("no wallet config at"), "stderr: {}", se(&o));
+    assert!(se(&o).contains("no wallet at"), "stderr: {}", se(&o));
     assert!(!se(&o).contains(MENU), "stderr: {}", se(&o));
 }
 
@@ -678,7 +687,7 @@ fn faucet_rejects_a_bad_recipient_before_touching_a_wallet() {
 fn faucet_without_wallet_errors_cleanly() {
     let o = lpad(&["faucet", "--config", "/nonexistent/lpad/wallet_config.json"]);
     assert!(!o.status.success());
-    assert!(se(&o).contains("no wallet config at"), "stderr: {}", se(&o));
+    assert!(se(&o).contains("no wallet at"), "stderr: {}", se(&o));
 }
 
 /// With a wallet to open, the notice comes out BEFORE the slow part - and on
