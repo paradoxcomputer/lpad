@@ -311,7 +311,19 @@ fn bc_buy_ata_rejects_a_substituted_ata_program() {
     let witness = public_transaction::WitnessSet::for_message(&message, &[&owner_key]);
     let result =
         state.transition_from_public_transaction(&PublicTransaction::new(message, witness), 0, 0);
-    assert!(result.is_err(), "BuyAta with a non-pinned ATA program must revert");
+    // Assert WHICH error, not merely that there was one. `is_err()` alone made this
+    // test pass in CI for the wrong reason: with no r0vm on the runner every
+    // execution failed as ProgramExecutionFailed("No such file or directory"), and
+    // a test that accepts any error happily reported the substituted-program guard
+    // as working while the guard had not run at all. A security test that passes
+    // when the security check never executes is worse than no test.
+    let err = result.expect_err("BuyAta with a non-pinned ATA program must revert");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("ata_program_id does not match"),
+        "must revert on the pinned-ATA guard specifically, not for some unrelated \
+         reason. Got: {msg}"
+    );
     // Vault untouched - no drain.
     assert_eq!(bal(&state, i.token_vault), D + R, "token vault unchanged after revert");
 }

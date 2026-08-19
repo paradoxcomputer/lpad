@@ -62,10 +62,19 @@ jobs:
             ~/.cargo/git
             programs/target
           key: ${{ runner.os }}-cargo-prog-${{ hashFiles('programs/Cargo.lock') }}
-      # RISC0_SKIP_BUILD keeps this from trying to cross-compile guests: a hosted
-      # runner has no risc0 toolchain, and none is needed, because `lpad_guests
-      # --features artifacts` embeds the ELFs committed under artifacts/lpad/ and
-      # only hashes them.
+      # RISC0_SKIP_BUILD keeps this from trying to cross-compile guests: nothing
+      # here builds one, because `lpad_guests --features artifacts` embeds the ELFs
+      # committed under artifacts/lpad/.
+      #
+      # r0vm IS needed, and an earlier version of this comment claimed it was not.
+      # Hashing an ELF needs no prover, but the in-process E2E step below EXECUTES
+      # those guests against the LEZ state machine, and `lee::state_machine`'s
+      # `default_executor()` shells out to r0vm. Without it every execution fails as
+      # ProgramExecutionFailed("No such file or directory (os error 2)"). Not
+      # hypothetical: this job failed exactly that way on its first real run, and it
+      # is invisible locally because risc0 finds r0vm under ~/.risc0 whatever PATH
+      # says. RISC0_DEV_MODE does NOT substitute - dev mode skips proving, not
+      # execution.
       #
       # That hash is what `pinned_ids_match_artifacts` checks, and it is the most
       # consequential test in the repo: the image ids in programs/src/lib.rs are
@@ -103,6 +112,14 @@ jobs:
       # recursive STARK is minutes of CPU per test. That is a deliberate,
       # per-test opt-in rather than a blanket one, so a future test that verifies
       # a receipt still cannot be satisfied by a fake one unless it asks to be.
+      # Pinned to the risc0-zkvm version programs/Cargo.lock resolves, so the
+      # executor and the crate driving it cannot drift apart.
+      - name: install r0vm (the state machine executes real guests)
+        run: |
+          set -euo pipefail
+          curl -Ls https://risczero.com/install | bash
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+          "$HOME/.risc0/bin/rzup" install r0vm 3.0.5
       - name: in-process E2E against the LEZ state machine
         working-directory: programs
         env:
