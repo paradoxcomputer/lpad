@@ -13,9 +13,10 @@ _lez
 .claude/
 **/.claude/
 
-# Devin skills (OpenSpec workflow tools)
-!.devin/
-!.devin/skills/
+# Devin skills (OpenSpec workflow tools). Another agent's tooling, like .claude/
+# above: not lpad source, and nothing a clone needs to build, test or deploy.
+.devin/
+.devinignore
 
 # ── Internal design docs + RFP sources + grant proposal ────────────
 # Kept local; not part of the published code repo. The committed CLI reference
