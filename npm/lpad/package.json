@@ -34,8 +34,7 @@
   ],
   "optionalDependencies": {
     "@paradoxcomputer/lpad-linux-x64": "0.3.1",
-    "@paradoxcomputer/lpad-darwin-arm64": "0.3.1",
-    "@paradoxcomputer/lpad-darwin-x64": "0.3.1"
+    "@paradoxcomputer/lpad-darwin-arm64": "0.3.1"
   },
   "engines": {
     "node": ">=18"

@@ -20,8 +20,18 @@ name: release (npm)
 #     npm/smoke-test.sh assembles that package from a real build and passes 26/26,
 #     including proof that the bundled libpcsclite is what makes the CLI start.
 #     The steps below are that script's steps, in the same order.
-#   * The two macOS matrix entries are ASPIRATIONAL. No lpad binary has ever been
-#     built on macOS in this project. They are expected to be the easy case (macOS
+#   * macOS arm64 is NO LONGER aspirational: lpad-darwin-arm64 built cleanly on
+#     macos-14 on 2026-08-19 (first macOS build in this project's history) and the
+#     resulting binary is a genuine `Mach-O 64-bit arm64 executable`, published as
+#     @paradoxcomputer/lpad-darwin-arm64.
+#   * Intel macOS is DROPPED from the matrix. macos-13 is the last Intel image,
+#     GitHub is retiring it, and the runner never became available - the job sat
+#     queued for over half an hour with no assignment. Rather than publish a
+#     package that has never been built, the entry is commented out, exactly as
+#     the rule below prescribes. An Intel mac now gets the honest "no prebuilt
+#     binary, build from source" message.
+#   * The original note, kept because the rule still governs: no lpad binary had
+#     ever been built on macOS in this project. They are expected to be the easy case (macOS
 #     needs no bundled library - the smartcard dependency is satisfied by the
 #     system PCSC framework) but the first release will be the first execution,
 #     and "expected to work" is a claim, not a result. If macOS fails, the honest
@@ -245,8 +255,9 @@ jobs:
           # the macOS floor unless MACOSX_DEPLOYMENT_TARGET keeps it pinned, which
           # is why that variable is set explicitly below instead of being left to
           # whatever the image defaults to.
-          - pkg: lpad-darwin-x64
-            runs-on: macos-13
+          # DROPPED - see the note above. Re-enable with a working Intel runner.
+          # - pkg: lpad-darwin-x64
+          #             runs-on: macos-13
             exercised: 'no - never built'
     steps:
       - uses: actions/checkout@v4

@@ -27,10 +27,14 @@ const PLATFORM_PKG = `${SCOPE}/lpad-${PLATFORM_KEY}`;
 // Kept in sync with the directories under npm/ and with the release job's
 // build matrix. Listed here only so the failure message can tell the user what
 // *is* supported.
+// Intel macOS is deliberately absent. GitHub is retiring the macos-13 image and
+// the runner never became available, so no Intel binary has ever been built -
+// and release.yml's own rule is to drop the entry rather than publish a package
+// that does not run. An Intel mac therefore falls into the "no prebuilt binary"
+// branch below, which tells the truth and points at building from source.
 const SUPPORTED = {
   'linux-x64': 'Linux x86_64, glibc >= 2.34 (Ubuntu 22.04+, Debian 12+)',
   'darwin-arm64': 'macOS on Apple silicon',
-  'darwin-x64': 'macOS on Intel',
 };
 
 function die(lines) {
