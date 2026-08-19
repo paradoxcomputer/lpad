@@ -12,7 +12,7 @@
 # `artifacts` is not a default feature (upstream: risc0#3772).
 [package]
 name = "lpad_guests"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [lib]

@@ -11,8 +11,18 @@ timeout rather than an error.
 
 ## [Unreleased]
 
-Needs a version number before it ships, and it is not a patch: all three program
-ids move and four existing instructions change arity, so **0.3.0**.
+## [0.3.0] - 2026-08-19
+
+Not a patch: all three program ids move and four existing instructions change
+arity.
+
+**The program ids in this release are the ones already deployed on Logos Testnet**
+(`bonding_curve` block 12609, `lbp` 12610, `wlez` 12611) - the guests were NOT
+rebuilt for the version bump, so the committed artifacts and the pinned ids are
+byte-for-byte what the chain runs. The bump does mean the next
+`scripts/build-guests.sh` will produce different ids, because a crate version
+feeds `-C metadata`; treat that rebuild as the deliberate act
+`programs/src/lib.rs` already describes, and redeploy what moves.
 
 ### Added
 

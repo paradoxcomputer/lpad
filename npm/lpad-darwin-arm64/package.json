@@ -1,6 +1,6 @@
 {
   "name": "@paradoxcomputer/lpad-darwin-arm64",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "lpad CLI binary for macOS on Apple silicon (arm64)",
   "homepage": "https://github.com/paradoxcomputer/lpad#readme",
   "bugs": {

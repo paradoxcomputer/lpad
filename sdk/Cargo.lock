@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "bonding_curve_core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "borsh",
  "lee_core",
@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "lbp_core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "borsh",
  "lee_core",
@@ -4769,7 +4769,7 @@ dependencies = [
 
 [[package]]
 name = "lpad-sdk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "associated_token_account_core",
  "bonding_curve_core",
@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "lpad_guests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lee",
  "risc0-binfmt",
@@ -8983,7 +8983,7 @@ dependencies = [
 
 [[package]]
 name = "wlez_core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lee_core",
  "risc0-zkvm",
