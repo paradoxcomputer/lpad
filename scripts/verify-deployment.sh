@@ -267,7 +267,27 @@ WLEZ_ID=$("$LPAD" program-id wlez --json | python3 -c 'import json,sys;print(jso
 # is on chain and owned by this build's wlez, wlez is deployed and current.
 WLEZ_VAULT=$("$LPAD" program-id wlez --json | python3 -c 'import json,sys;print(json.load(sys.stdin).get("vault",""))')
 if [ -n "$WLEZ_VAULT" ]; then
-  check_pda "WLEZ vault" "$WLEZ_VAULT" "$WLEZ_ID"
+  # An UNCLAIMED vault is not a deployment failure, and reporting it as one made
+  # this script fail on every freshly bootstrapped chain - testnet and paradox
+  # alike - for a reason that has nothing to do with deployment. The vault is
+  # claimed by wlez's `Initialize`, which only ever runs as part of a `wrap`, and
+  # `scripts/bootstrap.sh` never wraps. So on a chain where lpad is correctly
+  # deployed but nobody has wrapped yet, the account legitimately does not exist.
+  #
+  # The three outcomes are genuinely different and are now reported differently:
+  #   unclaimed          -> skip: no wrap has run here; says nothing about wlez
+  #   owned by this wlez -> pass: wlez is deployed AND current
+  #   owned by another   -> fail: real artifact drift, still a hard failure
+  #
+  # "Is wlez deployed?" is answered directly and without this proxy by
+  # `lpad --network <net> network --check`, which reads the ELF's own bytes out of
+  # a block.
+  WLEZ_VAULT_OWNER=$(acct_owner "$(norm_acct "$WLEZ_VAULT")")
+  if [ "$WLEZ_VAULT_OWNER" = "[0, 0, 0, 0, 0, 0, 0, 0]" ] || [ "$WLEZ_VAULT_OWNER" = "ABSENT" ]; then
+    skip "WLEZ vault: no wrap has run on this chain, so the vault was never claimed - use \`lpad network --check\` for whether wlez is deployed"
+  else
+    check_pda "WLEZ vault" "$WLEZ_VAULT" "$WLEZ_ID"
+  fi
 else
   no "could not derive the WLEZ vault id from 'lpad program-id wlez --json'"
 fi
