@@ -49,10 +49,12 @@ platform binary is fetched, not all of them - each lives in its own package gate
 postinstall script runs and nothing is fetched after the fact, so the install is just the
 two tarballs npm downloads - it works behind a proxy and under `--ignore-scripts`.
 
-Intel macs, arm64 Linux and Windows have no prebuilt binary; on those `lpad` says so and
+**Intel macs, arm64 Linux and Windows** have no prebuilt binary; on those `lpad` says so and
 points at building from source. The Linux build is glibc-only, so Alpine/musl needs a
 glibc image (`debian:12-slim`, `ubuntu:22.04`) or a source build. On Windows, use WSL2
 with a glibc distribution.
+
+### Quick, simple commands for testing
 
 Then go from an empty wallet to a token you can trade, entirely through `lpad`:
 
