@@ -47,7 +47,10 @@ ENVFILE="${LPAD_TEST_ENV:-$REPO/scripts/bootstrap.$NETWORK.env}"
 source "$ENVFILE"
 export LEE_WALLET_HOME_DIR="${LPAD_WALLET_HOME:-$NET_HOME}"
 export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
-L="$REPO/cli/target/release/lpad"
+# `LPAD_BIN` points the sweep at a different build than the local checkout's -
+# an npm-installed `lpad`, say - so a published package can be exercised by the
+# same harness. Same knob and same default as scripts/bootstrap.sh.
+L="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 
 if [ "${RISC0_DEV_MODE:-0}" = "1" ]; then
   echo "✗ RISC0_DEV_MODE=1 but $NET_ADDR verifies proofs - a dev receipt is rejected." >&2

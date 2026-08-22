@@ -125,7 +125,10 @@ export PATH="$HOME/.cargo/bin:$HOME/.risc0/bin:$PATH"
 # Default to REAL proofs (RISC0_DEV_MODE=0) to match how the launchpad runs;
 # dev/fake proofs are NOT usable against a real sequencer - it verifies them.
 export RISC0_DEV_MODE="${RISC0_DEV_MODE:-0}"
-L="$REPO/cli/target/release/lpad"
+# `LPAD_BIN` points the sweep at a different build than the local checkout's -
+# an npm-installed `lpad`, say - so a published package can be exercised by the
+# same harness. Same knob and same default as scripts/bootstrap.sh.
+L="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 # --network is a clap global, so it is accepted before the subcommand and
 # propagates into `bc`/`lbp`. It overrides the wallet config for that invocation
 # only, which is what makes one wallet home usable against several sequencers.
