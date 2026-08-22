@@ -28,6 +28,14 @@
 #                       chain, so it is the safe way to smoke-test this script.
 #   LPAD_ALLOW_ENV_MISMATCH  1 = don't refuse an env file bootstrapped against a
 #                       different network (see the guard below)
+#   LPAD_START_AT       resume a half-finished sweep: report every case BEFORE
+#                       this one as a skip, then run the rest. A name that
+#                       matches no case FAILS the run rather than skipping
+#                       everything in silence.
+#   LPAD_SKIP_CASES     resume: comma-separated case names to skip wherever they
+#                       fall, for work a previous run already proved. Same rules
+#                       - reported as skips, never as passes, and an unmatched
+#                       name is a failure.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -135,10 +143,133 @@ L="${LPAD_BIN:-$REPO/cli/target/release/lpad}"
 # Offline commands never resolve a sequencer, so they are left untouched.
 NET=(--network "$NETWORK")
 
+# ---------------------------------------------------------------------------
+# Resuming a half-finished sweep.
+#
+# This script runs top to bottom and keeps no memory between runs, which is fine
+# right up until a run dies five hours in. Starting again from the top then
+# re-proves private ops that a previous run already proved, and each of those is
+# a real recursive STARK - measured on the Logos testnet at between 36 and 70
+# minutes EACH - that can only arrive at the same answer it arrived at the first
+# time. A power cut during `lbp buy-private` should not cost two hours of
+# re-proving `bc buy-private`, `bc sell-private` and `bc buy-disposable`.
+#
+#   LPAD_START_AT="<case>"    skip every case before <case>, then run the rest
+#   LPAD_SKIP_CASES="a,b,c"   skip these named cases wherever they fall
+#
+# Deliberately NOT a state file. What a previous run finished is a fact about the
+# CHAIN, and the chain is the thing to ask - `bc sale-info` counts the buys, the
+# treasury holding shows the swept fee - whereas a state file is one more thing
+# that can be stale, and it would be trusted precisely when it was written by the
+# run that crashed.
+#
+# Every case either of these skips goes through the same skip() the private-op
+# knobs use, so a resumed run can no more claim their coverage than an
+# LPAD_SKIP_PRIVATE=1 run can claim the private ops'. The tally says PARTIAL, and
+# each skipped name is printed with the knob that skipped it.
+START_AT="${LPAD_START_AT:-}"
+SKIP_CASES="${LPAD_SKIP_CASES:-}"
+# 1 once the sweep has reached LPAD_START_AT; 1 from the outset when unset, which
+# is what makes an ordinary run behave exactly as it did before these knobs.
+STARTED=1; [ -n "$START_AT" ] && STARTED=0
+RESUME_SKIPS=0
+# The LPAD_SKIP_CASES names that actually matched something. A name matching
+# nothing is a typo, and a silently ignored typo is the operator believing they
+# skipped a 40-minute proof that is in fact running; resume_audit turns it into a
+# failure at the end.
+SKIP_MATCHED=""
+PARTIAL=""
+
+# The lifecycle and gated blocks near the bottom build their OWN sale and pool
+# from a per-run nonce and then act on it, so their cases are only meaningful as
+# a group: starting at `bc close` would close a sale this run never created, and
+# `sale_id`/`pool_id` would hand it a PDA that does not exist - which surfaces as
+# a dropped transaction and a 30-minute poll, not as an error that says what went
+# wrong. Refuse those names here instead. The legal way into either block is its
+# own create, which is cheap to redo: `bc create-sale`, `lbp create-sale`,
+# `lbp create-sale (gated)`.
+case "$START_AT" in
+  "bc buy (close-test)"|"bc close"|"bc withdraw"|"lbp buy (fee-test)"|"lbp close"|\
+  "lbp withdraw"|"lbp sweep-treasury"|"lbp buy-gated")
+    echo "LPAD_START_AT='$START_AT' is inside a block that creates its own fixture, so it" >&2
+    echo "cannot be entered part-way: the sale/pool it acts on is made by the create above it." >&2
+    echo "Start at that create instead (bc create-sale, lbp create-sale, lbp create-sale (gated))." >&2
+    exit 2 ;;
+esac
+
+# Should this case run? Every chk* wrapper asks this FIRST, before its own
+# reasons for skipping, for two reasons: a resume is the more informative reason
+# to print, and STARTED has to flip on the way past LPAD_START_AT even for a case
+# that some other knob would have skipped anyway - otherwise naming a private op
+# as the start point while LPAD_SKIP_PRIVATE=1 would leave STARTED at 0 and skip
+# the entire rest of the sweep.
+#
+# Safe to ask twice for the same case, which chkp/chkps do by delegating down to
+# chk: the skip arms return before delegating, and once STARTED has flipped the
+# first arm answers every later call.
+#
+# Calls skip(), which is defined below with the rest of the tally helpers - bash
+# resolves a function name when the call runs, and nothing here runs before the
+# first case.
+want_case() {
+  local n="$1"
+  case ",$SKIP_CASES," in
+    *",$n,"*)
+      SKIP_MATCHED="$SKIP_MATCHED,$n"
+      skip "$n" "LPAD_SKIP_CASES - a previous run already covered it"
+      RESUME_SKIPS=$((RESUME_SKIPS + 1)); return 1 ;;
+  esac
+  [ "$STARTED" = 1 ] && return 0
+  [ "$n" = "$START_AT" ] && { STARTED=1; return 0; }
+  skip "$n" "before LPAD_START_AT=$START_AT"
+  RESUME_SKIPS=$((RESUME_SKIPS + 1)); return 1
+}
+
+# Has the sweep reached LPAD_START_AT yet? Asked by the code BETWEEN cases, not
+# by the cases themselves. Gating only the chk* calls would skip a case and then
+# still sit through its setup, and that setup is not free: the two chain-clock
+# waits below are up to 40 minutes each AND send real nudge transactions of their
+# own, which is the opposite of what someone resuming past them wants.
+started() { [ "$STARTED" = 1 ]; }
+
+# Called just before the tally, from both exits.
+#
+# Deliberately before the "=== N passed ===" line rather than after it, so a
+# failure it finds is counted IN that line. (The coverage assertion below adds to
+# FAIL after the line is already printed, which understates it by one - a wart
+# worth not copying.)
+resume_audit() {
+  local n
+  if [ -n "$START_AT" ] && [ "$STARTED" != 1 ]; then
+    echo "!! LPAD_START_AT='$START_AT' matched no case in this sweep (or names one this run"
+    echo "   could never reach), so EVERY case was skipped and nothing was proved. Check the"
+    echo "   spelling against the case names printed by a full run - they include the"
+    echo "   parenthesised ones like 'bc buy (close-test)'."
+    FAIL=$((FAIL + 1)); FAILED+=("LPAD_START_AT '$START_AT' matched no case")
+  fi
+  local IFS=','
+  for n in $SKIP_CASES; do
+    [ -n "$n" ] || continue
+    case ",$SKIP_MATCHED," in *",$n,"*) continue ;; esac
+    echo "!! LPAD_SKIP_CASES named '$n', which is not a case in this sweep - so it was NOT"
+    echo "   skipped, and whatever you meant to skip ran."
+    FAIL=$((FAIL + 1)); FAILED+=("LPAD_SKIP_CASES '$n' matched no case")
+  done
+  if [ "$RESUME_SKIPS" -gt 0 ]; then
+    PARTIAL="  ** PARTIAL RUN **"
+    echo "!! PARTIAL RUN: $RESUME_SKIPS case(s) were skipped by LPAD_START_AT/LPAD_SKIP_CASES."
+    echo "   This run does not certify them - it says nothing about them at all. They are"
+    echo "   listed under SKIPPED below with the knob that skipped them; only a sweep run"
+    echo "   from the top with neither knob set covers all of them in one go."
+  fi
+}
+
 echo "## target: $NETWORK ($NET_ADDR)"
 echo "##   wallet home: $LEE_WALLET_HOME_DIR"
 echo "##   env file:    $ENVFILE"
 [ "$SKIP_PRIVATE" = "1" ] && echo "##   LPAD_SKIP_PRIVATE=1 - real-STARK private ops will be skipped"
+[ -n "$START_AT" ]    && echo "##   LPAD_START_AT=$START_AT - every case before it is reported as a skip"
+[ -n "$SKIP_CASES" ]  && echo "##   LPAD_SKIP_CASES=$SKIP_CASES - reported as skips"
 echo
 
 PASS=0; FAIL=0; SKIP=0; declare -a FAILED; declare -a SKIPPED; declare -a COVERED
@@ -158,6 +289,7 @@ resume_on_exit() {
 }
 trap resume_on_exit EXIT INT TERM
 chk() { local n="$1"; shift
+  want_case "$n" || return 0
   COVERED+=("$n")
   if "$@" >/tmp/cli_t.out 2>&1; then echo "  ✓ $n"; PASS=$((PASS+1))
   else echo "  ✗ $n"; FAIL=$((FAIL+1)); FAILED+=("$n"); sed 's/^/        /' /tmp/cli_t.out | tail -4; fi; }
@@ -168,11 +300,13 @@ skip() { echo "  - $1 (skipped: $2)"; SKIP=$((SKIP+1)); SKIPPED+=("$1 [$2]"); CO
 # needs a real recursive STARK (hours of CPU), which is why the fast public sweep
 # wants them out of the way.
 chkp() { local n="$1"; shift
+  want_case "$n" || return 0
   if [ "$SKIP_PRIVATE" = "1" ]; then skip "$n" "LPAD_SKIP_PRIVATE=1"; return 0; fi
   chk "$n" "$@"; }
 # chkps: a private op that also SPENDS a shielded holding, so it additionally
 # needs LPAD_PRIV_* from the env file. LPAD_SKIP_PRIVATE wins as the reason.
 chkps() { local n="$1"
+  want_case "$n" || return 0
   if [ "$SKIP_PRIVATE" != "1" ] && { [ -z "$LPAD_PRIV_COLL" ] || [ -z "$LPAD_PRIV_PROJ" ]; }; then
     skip "$n" "no shielded holdings (LPAD_PRIV_*) in $ENVFILE"; return 0
   fi
@@ -191,6 +325,7 @@ pool_id() { "$L" lbp ids --program "$LPAD_LBP_PROGRAM_ID" --token-def "$LPAD_PRO
 # because it only reproduces against a real wallet + sequencer.
 jsonchk() {
   local n="$1"; shift
+  want_case "$n" || return 0
   COVERED+=("$n")
   local out
   out=$("$@" 2>/dev/null)
@@ -248,7 +383,9 @@ else
 fi
 
 # Everything below is ONLINE and therefore carries "${NET[@]}".
-[ "${LPAD_OFFLINE_ONLY:-0}" = "1" ] && { echo; echo "=== $PASS passed, $FAIL failed, $SKIP skipped (offline only) ==="
+[ "${LPAD_OFFLINE_ONLY:-0}" = "1" ] && { echo; resume_audit
+  echo "=== $PASS passed, $FAIL failed, $SKIP skipped (offline only)$PARTIAL ==="
+  if [ "$SKIP" -gt 0 ]; then printf 'SKIPPED: %s\n' "${SKIPPED[@]}"; fi
   if [ "$FAIL" -gt 0 ]; then printf 'FAILED: %s\n' "${FAILED[@]}"; exit 1; fi; exit 0; }
 
 # ---------------------------------------------------------------------------
@@ -516,7 +653,11 @@ NATIVE=$(native_balance)
 # unaddressed claim tops up one account and is measured on another: the balance
 # never moves, and WRAP_AMT / LEZ_PRIV_AMT get sized off a stale figure.
 chk "faucet" "$L" "${NET[@]}" faucet --to "$LPAD_CREATOR"
-wait_block
+# Only worth waiting on when the claim actually ran: a resumed run that skipped
+# it has no incoming block to wait for, and this is up to four minutes of sleep
+# for a balance that did not move. The re-read below is a single RPC either way,
+# so it stays unconditional and WRAP_AMT is still sized off a fresh figure.
+started && wait_block
 NATIVE=$(native_balance)
 echo "   creator native balance after faucet = $NATIVE"
 
@@ -578,8 +719,14 @@ BC_END=$(( $(date +%s%3N) + 600000 ))
 chk "bc create-sale" "$L" "${NET[@]}" bc create-sale --program "$LPAD_BC_PROGRAM_ID" --collateral-def "$LPAD_COLL_DEF" --treasury "$LPAD_TREASURY" --creator-token-holding "$LPAD_PROJ_HOLD" --creator "$LPAD_CREATOR" --sale-quantity 100000 --dex-seed 100 --vt 2000000 --vc 50000 --fee-bps 100 --end-ts "$BC_END" --nonce "$N7"
 BC7=$(sale_id "$N7")
 chk "bc buy (close-test)" "$L" "${NET[@]}" bc buy --program "$LPAD_BC_PROGRAM_ID" --sale "$BC7" --buyer-collateral "$LPAD_BUYER_COLL" --buyer-token "$LPAD_BUYER_TOK" --in 100 --min-out 0
-wait_chain_past "$BC_END" \
-  "$L" "${NET[@]}" bc buy --program "$LPAD_BC_PROGRAM_ID" --sale "$LPAD_SALE_ID" --buyer-collateral "$LPAD_BUYER_COLL" --buyer-token "$LPAD_BUYER_TOK" --in 100 --min-out 0
+# Skipped whole when the resume has not reached this block: the wait is up to 40
+# minutes and its nudges are real transactions against the shared bootstrap sale,
+# so running it for a `bc close` that is being skipped would spend the run's
+# single most expensive stretch on nothing.
+if started; then
+  wait_chain_past "$BC_END" \
+    "$L" "${NET[@]}" bc buy --program "$LPAD_BC_PROGRAM_ID" --sale "$LPAD_SALE_ID" --buyer-collateral "$LPAD_BUYER_COLL" --buyer-token "$LPAD_BUYER_TOK" --in 100 --min-out 0
+fi
 chk "bc close"    "$L" "${NET[@]}" bc close    --program "$LPAD_BC_PROGRAM_ID" --sale "$BC7" --creator "$LPAD_CREATOR"
 chk "bc withdraw" "$L" "${NET[@]}" bc withdraw --program "$LPAD_BC_PROGRAM_ID" --sale "$BC7" --creator-collateral "$LPAD_COLL_HOLD" --creator-token "$LPAD_PROJ_HOLD" --creator "$LPAD_CREATOR"
 
@@ -603,8 +750,10 @@ chk "lbp buy (fee-test)" "$L" "${NET[@]}" lbp buy --program "$LPAD_LBP_PROGRAM_I
 # Same shape as the bonding-curve close above: wait the window out locally, then
 # push a transaction through the long-running bootstrap pool so a fresh block
 # carries the clock past t_end (an idle chain's clock does not move on its own).
-wait_chain_past "$LBP_TE" \
-  "$L" "${NET[@]}" lbp poke --program "$LPAD_LBP_PROGRAM_ID" --pool "$LPAD_LBP_POOL_ID"
+if started; then                       # same reasoning as the bonding-curve wait above
+  wait_chain_past "$LBP_TE" \
+    "$L" "${NET[@]}" lbp poke --program "$LPAD_LBP_PROGRAM_ID" --pool "$LPAD_LBP_POOL_ID"
+fi
 chk "lbp close"    "$L" "${NET[@]}" lbp close    --program "$LPAD_LBP_PROGRAM_ID" --pool "$LBP7" --creator "$LPAD_CREATOR"
 chk "lbp withdraw" "$L" "${NET[@]}" lbp withdraw --program "$LPAD_LBP_PROGRAM_ID" --pool "$LBP7" --creator-collateral "$LPAD_COLL_HOLD" --creator-token "$LPAD_PROJ_HOLD" --creator "$LPAD_CREATOR"
 # `lbp withdraw` pays the creator and ESCROWS the fee; this is the only
@@ -648,7 +797,8 @@ COVERED_NORM=$(printf '%s\n' "${COVERED[@]:-}" \
   | sed 's/ --.*//' | sed 's/^program-id .*/program-id/' | sed 's/[[:space:]]*$//' | sort -u)
 MISSING=$(comm -23 <(printf '%s\n' "$ALL_CMDS") <(printf '%s\n' "$COVERED_NORM"))
 
-echo "=== $PASS passed, $FAIL failed, $SKIP skipped ==="
+resume_audit
+echo "=== $PASS passed, $FAIL failed, $SKIP skipped$PARTIAL ==="
 if [ -n "$MISSING" ]; then
   echo "!! NOT EXERCISED by this sweep - coverage is incomplete:"
   printf '     %s\n' $MISSING
